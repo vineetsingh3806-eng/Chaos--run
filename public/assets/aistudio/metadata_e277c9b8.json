@@ -1,0 +1,6 @@
+{
+  "name": "Chaos Run",
+  "description": "An original 2D retro pixel-art adventure platformer where the environment is your biggest challenge. Featuring 50 levels across 5 worlds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

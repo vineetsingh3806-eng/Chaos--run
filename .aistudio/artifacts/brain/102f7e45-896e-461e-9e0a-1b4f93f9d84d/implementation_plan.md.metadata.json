@@ -1,0 +1,6 @@
+{
+  "summary":  "Targeted corrections to CHAOS RUN Phase 1 Master Plan. Clarifies that spr_aarav_sheet.png is not yet generated and will be built in Phase 1 from the approved model sheet; adds the 8th DAMAGE animation state; redesigns Secret Ledge vertical jump from 3 tiles to 2 tiles (+56.5% clearance); requires genuine downward velocity (vy > 0) with swept surface crossing for disappearing floors; defines complete mutable snapshot state including moving platforms (144x24 GU, X: 3936-4224 GU, T=3.2s); and confirms performance metrics are measurable targets.",
+  "updatedAt":  "2026-11-12T14:40:05.221462913Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
