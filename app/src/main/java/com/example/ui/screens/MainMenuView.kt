@@ -33,7 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.data.DifficultyTier
+import com.example.data.ChallengeCatalog
 import com.example.data.StoryClueId
 import com.example.ui.GameStateViewModel
 
@@ -48,8 +48,8 @@ fun MainMenuView(
   val bestScore by viewModel.bestScore.collectAsState()
   val discoveredClues by viewModel.discoveredClues.collectAsState()
   val isResonanceFound by viewModel.isResonanceDiscovered.collectAsState()
-  val selectedDifficulty by viewModel.selectedDifficulty.collectAsState()
   val levelsProgress by viewModel.levelsProgress.collectAsState()
+  val continuousState by viewModel.continuousPersistedState.collectAsState()
   val unlockedCount = levelsProgress.count { it.isUnlocked }
   val highestUnlocked = levelsProgress.lastOrNull { it.isUnlocked }?.levelId ?: 1
   val highestMeta = levelsProgress.firstOrNull { it.levelId == highestUnlocked }
@@ -274,57 +274,14 @@ fun MainMenuView(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Difficulty Tier Selector (Normal / Hard / Nightmare)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("difficulty_selector_row"),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-          DifficultyTier.entries.forEach { tier ->
-            val isSelected = tier == selectedDifficulty
-            val tierAccent = when (tier) {
-              DifficultyTier.NORMAL -> Color(0xFF10B981)
-              DifficultyTier.HARD -> Color(0xFFF59E0B)
-              DifficultyTier.NIGHTMARE -> Color(0xFFEF4444)
-            }
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(if (isSelected) tierAccent.copy(alpha = 0.24f) else Color(0xBB0D191F))
-                    .border(
-                        width = if (isSelected) 1.8.dp else 1.dp,
-                        color = if (isSelected) tierAccent else Color(0xFF334155),
-                        shape = RoundedCornerShape(9.dp)
-                    )
-                    .clickable { viewModel.setDifficulty(tier) }
-                    .testTag("difficulty_${tier.name.lowercase()}")
-                    .padding(horizontal = 6.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-              Text(
-                  text = tier.label,
-                  fontSize = 10.sp,
-                  fontWeight = if (isSelected) FontWeight.Black else FontWeight.Bold,
-                  color = if (isSelected) Color(0xFFFFFBEB) else Color(0xFF94A3B8),
-                  maxLines = 1
-              )
-            }
-          }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
         // Primary Play / Continue Buttons
         if (highestUnlocked > 1 && highestMeta != null) {
           AdventureButton(
               text = "CONTINUE 1-${highestMeta.levelId}: ${highestMeta.title.uppercase()}",
-              subtitle = "${selectedDifficulty.label} • ${highestMeta.mechanicTag}",
+              subtitle = highestMeta.mechanicTag,
               accentColor = Color(0xFF38BDF8),
               icon = Icons.Default.FastForward,
-              onClick = { viewModel.startLevel(highestMeta.levelId, selectedDifficulty) },
+              onClick = { viewModel.startLevel(highestMeta.levelId) },
               testTag = "button_continue_latest"
           )
           Spacer(modifier = Modifier.height(6.dp))
@@ -332,10 +289,10 @@ fun MainMenuView(
 
         AdventureButton(
             text = "PLAY 1-1: THE EASY START",
-            subtitle = "${selectedDifficulty.label} • Disappearing Floors, Crumble & Pop Spikes",
+            subtitle = "Disappearing Floors, Crumble & Pop Spikes",
             accentColor = Color(0xFF10B981),
             icon = Icons.Default.PlayArrow,
-            onClick = { viewModel.startLevel1(selectedDifficulty) },
+            onClick = { viewModel.startLevel1() },
             testTag = "button_play_level_1"
         )
 
@@ -391,6 +348,59 @@ fun MainMenuView(
               testTag = "button_settings",
               modifier = Modifier.weight(1f)
           )
+        }
+      }
+
+      // Right Panel: Continuous Run Entry & Status (does not displace left panel in landscape)
+      Column(
+          modifier = Modifier
+              .align(Alignment.BottomEnd)
+              .widthIn(max = 290.dp)
+              .clip(RoundedCornerShape(14.dp))
+              .background(Color(0xDD0E1D24))
+              .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(14.dp))
+              .padding(10.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp)
+      ) {
+        val activeChallengeDef = ChallengeCatalog.findById(continuousState.activeChallengeId)
+        val continuousTitle = when {
+          continuousState.isRunActive && !continuousState.isRunCompleted && activeChallengeDef != null ->
+            "CONTINUE RUN • CH ${activeChallengeDef.orderIndex}/${ChallengeCatalog.entries.size}"
+          else -> "START CONTINUOUS RUN"
+        }
+        val continuousSubtitle = when {
+          continuousState.isRunActive && !continuousState.isRunCompleted ->
+            "${continuousState.completedChallengeIds.size}/5 cleared • ${continuousState.cumulativeDeaths} deaths"
+          continuousState.isRunCompleted ->
+            "Last run 5/5 cleared • Best ${continuousState.bestRunScore}pts"
+          else -> "Ch 1–5 continuous progression"
+        }
+
+        AdventureButton(
+            text = continuousTitle,
+            subtitle = continuousSubtitle,
+            accentColor = Color(0xFFF59E0B),
+            icon = Icons.Default.FastForward,
+            onClick = { viewModel.startOrContinueContinuousRun() },
+            testTag = "button_continuous_run"
+        )
+
+        if (continuousState.isRunCompleted) {
+          OutlinedButton(
+              onClick = { viewModel.openRunCompletionScreen() },
+              shape = RoundedCornerShape(10.dp),
+              modifier = Modifier
+                  .fillMaxWidth()
+                  .heightIn(min = 48.dp)
+                  .testTag("button_view_run_summary")
+          ) {
+            Text(
+                text = "RUN COMPLETION SUMMARY",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFF67E8F9)
+            )
+          }
         }
       }
     }

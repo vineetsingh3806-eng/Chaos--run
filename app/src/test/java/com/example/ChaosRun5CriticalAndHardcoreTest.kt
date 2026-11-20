@@ -59,11 +59,7 @@ class ChaosRun5CriticalAndHardcoreTest {
         .commit()
   }
 
-  private fun launchGameplayViaUi(difficulty: DifficultyTier = DifficultyTier.NORMAL): Pair<GameStateViewModel, ChaosGameEngine> {
-    if (difficulty != DifficultyTier.NORMAL) {
-      composeTestRule.onNodeWithTag("difficulty_${difficulty.name.lowercase()}").performClick()
-      composeTestRule.waitForIdle()
-    }
+  private fun launchGameplayViaUi(): Pair<GameStateViewModel, ChaosGameEngine> {
     composeTestRule.onNodeWithTag("button_play_level_1").performClick()
     composeTestRule.waitForIdle()
     lateinit var vm: GameStateViewModel
@@ -376,11 +372,11 @@ class ChaosRun5CriticalAndHardcoreTest {
 
   @Test
   fun test06_difficultyTiersScaleHealthTrapTimingsAndSyntheticHazards() {
-    // 1. Verify difficulty tier selector in UI switches to NIGHTMARE & launches 2-heart / tighter trap timings
-    val (vm, nightmareEngine) = launchGameplayViaUi(DifficultyTier.NIGHTMARE)
-    assertEquals(DifficultyTier.NIGHTMARE, vm.selectedDifficulty.value)
-    assertEquals(2, nightmareEngine.player.maxHealth)
-    assertEquals(2, nightmareEngine.player.health)
+    // 1. Verify UI launches directly with NORMAL difficulty (3 hearts, no difficulty selector)
+    val (_, normalEngine) = launchGameplayViaUi()
+    assertEquals(DifficultyTier.NORMAL, normalEngine.level.difficulty)
+    assertEquals(DifficultyTier.NORMAL.startingHealth, normalEngine.player.maxHealth)
+    assertEquals(DifficultyTier.NORMAL.startingHealth, normalEngine.player.health)
 
     val normalL4 = World1Levels.createLevel(4, DifficultyTier.NORMAL)
     val nightmareL4 = World1Levels.createLevel(4, DifficultyTier.NIGHTMARE)
@@ -503,9 +499,8 @@ class ChaosRun5CriticalAndHardcoreTest {
   fun test07_generateStage5VisualEvidence() {
     val outDir = File("build/reports/stage5_evidence").apply { mkdirs() }
 
-    // 1. Main Menu with Difficulty Tier selector
+    // 1. Main Menu without Difficulty Tier selector
     val menuBmp = Bitmap.createBitmap(1280, 720, Bitmap.Config.ARGB_8888)
-    composeTestRule.onNodeWithTag("difficulty_nightmare").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.activityRule.scenario.onActivity { activity ->
       val decor = activity.window.decorView
@@ -521,7 +516,7 @@ class ChaosRun5CriticalAndHardcoreTest {
     assertTrue(File(outDir, "stage5_main_menu_difficulty.png").length() > 2000L)
 
     // 2. Gameplay screen with lower safe-area whisper panel positioned above movement controls
-    val (vm, uiEngine) = launchGameplayViaUi(DifficultyTier.HARD)
+    val (vm, uiEngine) = launchGameplayViaUi()
     val uiRenderer = vm.gameRenderer!!
     uiEngine.showContextNotification(
         "STAGE5_WHISPER",

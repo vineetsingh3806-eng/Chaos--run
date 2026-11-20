@@ -146,7 +146,7 @@ object World1Levels {
             triggerMaxX = 19.3f * TILE_SIZE,
             triggerMinY = 9f * TILE_SIZE,
             triggerMaxY = 13.5f * TILE_SIZE,
-            telegraphDurationFrames = (7 + reactionLag).coerceAtLeast(3),
+            telegraphDurationFrames = (12 + reactionLag).coerceAtLeast(12),
             activeDurationFrames = 0,
             killsPlayer = true,
             quipPopup = "SURPRISE!"
@@ -192,7 +192,7 @@ object World1Levels {
             initialY = 13f * TILE_SIZE,
             width = TILE_SIZE * 2f,
             height = TILE_SIZE,
-            telegraphDurationFrames = (6 + reactionLag).coerceAtLeast(3),
+            telegraphDurationFrames = (12 + reactionLag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "TRICKED!"
         ),

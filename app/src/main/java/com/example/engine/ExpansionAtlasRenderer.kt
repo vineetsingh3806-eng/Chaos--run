@@ -19,7 +19,15 @@ class ExpansionAtlasRenderer {
   private val subRectTemp = RectF()
   private val pathTemp = Path()
 
-  private val paintBgTop = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintSky = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintMist = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintSunHalo = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintSunCore = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintCloud = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintHillFar = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintHillMid = Paint(Paint.ANTI_ALIAS_FLAG)
+  private val paintTreeTrunk = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF6B5344.toInt() }
+  private val paintTreeCanopy = Paint(Paint.ANTI_ALIAS_FLAG)
   private val paintSilhouette = Paint(Paint.ANTI_ALIAS_FLAG)
   private val paintGlow = Paint(Paint.ANTI_ALIAS_FLAG)
   private val paintFill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -39,9 +47,9 @@ class ExpansionAtlasRenderer {
     strokeWidth = 2f
   }
   private val paintRain = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = 0x88BAE6FD.toInt()
+    color = 0x66E0F2FE
     style = Paint.Style.STROKE
-    strokeWidth = 2.1f
+    strokeWidth = 1.9f
     strokeCap = Paint.Cap.ROUND
   }
 
@@ -71,6 +79,7 @@ class ExpansionAtlasRenderer {
   private var cachedTheme: LevelTheme? = null
   private var cachedHeight: Float = -1f
   private var cachedBgShader: LinearGradient? = null
+  private var cachedMistShader: LinearGradient? = null
 
   fun drawThemeBackdrop(
       canvas: Canvas,
@@ -80,179 +89,347 @@ class ExpansionAtlasRenderer {
       cameraX: Float,
       animTick: Int
   ) {
-    if (cachedTheme != theme || cachedHeight != viewH || cachedBgShader == null) {
-      val colors = when (theme) {
-        LevelTheme.HOLLOW_OF_ECHOES -> intArrayOf(0xFF070C18.toInt(), 0xFF132238.toInt(), 0xFF1A3142.toInt())
-        LevelTheme.RUINS_OF_LOST_KING -> intArrayOf(0xFF2B1B12.toInt(), 0xFF5C3A21.toInt(), 0xFF8C5A2B.toInt())
-        LevelTheme.MONSOON_RUN -> intArrayOf(0xFF091520.toInt(), 0xFF132E3C.toInt(), 0xFF1B4552.toInt())
-        LevelTheme.TEMPLE_OF_LAST_LIGHT -> intArrayOf(0xFF1A102B.toInt(), 0xFF2D2252.toInt(), 0xFF4A3B5E.toInt())
-        LevelTheme.WHISPERING_WOODS -> intArrayOf(0xFF0F2922.toInt(), 0xFF1B3B2B.toInt(), 0xFF274E3B.toInt())
+    if (viewW <= 0f || viewH <= 0f) return
+
+    if (cachedTheme != theme || cachedHeight != viewH || cachedBgShader == null || cachedMistShader == null) {
+      val skyColors = when (theme) {
+        LevelTheme.WHISPERING_WOODS -> intArrayOf(0xFF5BB5EA.toInt(), 0xFFA5E0FA.toInt(), 0xFFE2F8ED.toInt())
+        LevelTheme.HOLLOW_OF_ECHOES -> intArrayOf(0xFF1A3D5C.toInt(), 0xFF2B6082.toInt(), 0xFF4C8FA8.toInt())
+        LevelTheme.RUINS_OF_LOST_KING -> intArrayOf(0xFF5D8CEB.toInt(), 0xFFF4AA80.toInt(), 0xFFFDE6B2.toInt())
+        LevelTheme.MONSOON_RUN -> intArrayOf(0xFF2D4C6E.toInt(), 0xFF4B7699.toInt(), 0xFF7FA6C4.toInt())
+        LevelTheme.TEMPLE_OF_LAST_LIGHT -> intArrayOf(0xFF33296E.toInt(), 0xFF564AA0.toInt(), 0xFFA790D6.toInt())
       }
-      cachedBgShader = LinearGradient(0f, 0f, 0f, viewH, colors, floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+      val mistColor = when (theme) {
+        LevelTheme.WHISPERING_WOODS -> 0x40EEFCF5
+        LevelTheme.HOLLOW_OF_ECHOES -> 0x3393E2F5
+        LevelTheme.RUINS_OF_LOST_KING -> 0x3DFEF3C7
+        LevelTheme.MONSOON_RUN -> 0x38CBE2F2
+        LevelTheme.TEMPLE_OF_LAST_LIGHT -> 0x30DDD6FE
+      }
+      cachedBgShader = LinearGradient(0f, 0f, 0f, viewH, skyColors, floatArrayOf(0f, 0.56f, 1f), Shader.TileMode.CLAMP)
+      cachedMistShader = LinearGradient(0f, viewH * 0.55f, 0f, viewH, intArrayOf(0x00FFFFFF, mistColor), null, Shader.TileMode.CLAMP)
       cachedTheme = theme
       cachedHeight = viewH
-      paintBgTop.shader = cachedBgShader
+      paintSky.shader = cachedBgShader
+      paintMist.shader = cachedMistShader
     }
-    canvas.drawRect(0f, 0f, viewW, viewH, paintBgTop)
+    canvas.drawRect(0f, 0f, viewW, viewH, paintSky)
 
     when (theme) {
+      LevelTheme.WHISPERING_WOODS -> drawWoodsParallax(canvas, viewW, viewH, cameraX, animTick)
       LevelTheme.HOLLOW_OF_ECHOES -> drawCavernParallax(canvas, viewW, viewH, cameraX, animTick)
       LevelTheme.RUINS_OF_LOST_KING -> drawRuinsParallax(canvas, viewW, viewH, cameraX, animTick)
       LevelTheme.MONSOON_RUN -> drawMonsoonParallax(canvas, viewW, viewH, cameraX, animTick)
       LevelTheme.TEMPLE_OF_LAST_LIGHT -> drawTempleParallax(canvas, viewW, viewH, cameraX, animTick)
-      LevelTheme.WHISPERING_WOODS -> Unit
+    }
+
+    // Soft horizon separation haze so foreground platforms, traps, spikes, and Aarav stay high-contrast
+    canvas.drawRect(0f, viewH * 0.55f, viewW, viewH, paintMist)
+  }
+
+  private fun drawCartoonCloud(canvas: Canvas, cx: Float, cy: Float, scale: Float, color: Int) {
+    paintCloud.color = color
+    canvas.drawCircle(cx - 22f * scale, cy + 4f * scale, 18f * scale, paintCloud)
+    canvas.drawCircle(cx, cy - 5f * scale, 24f * scale, paintCloud)
+    canvas.drawCircle(cx + 24f * scale, cy + 5f * scale, 16f * scale, paintCloud)
+    rectTemp.set(cx - 24f * scale, cy, cx + 26f * scale, cy + 20f * scale)
+    canvas.drawRoundRect(rectTemp, 10f * scale, 10f * scale, paintCloud)
+  }
+
+  private fun drawWoodsParallax(canvas: Canvas, viewW: Float, viewH: Float, camX: Float, tick: Int) {
+    // Cheerful cartoon sun with soft halo
+    val sunX = viewW * 0.82f - ((camX * 0.02f) % 80f)
+    val sunY = viewH * 0.19f
+    paintSunHalo.color = 0x4DFEF08A
+    canvas.drawCircle(sunX, sunY, 54f, paintSunHalo)
+    paintSunCore.color = 0xFFFDE047.toInt()
+    canvas.drawCircle(sunX, sunY, 28f, paintSunCore)
+
+    // Minimal puffy cartoon clouds
+    val cloudSpan = 420f
+    val cloudOffset = (camX * 0.06f + tick * 0.14f) % cloudSpan
+    var cx = -cloudOffset - cloudSpan * 0.5f
+    var cIdx = 0
+    while (cx < viewW + cloudSpan) {
+      val cy = viewH * (0.14f + (cIdx % 2) * 0.09f)
+      val scale = if (cIdx % 2 == 0) 1.05f else 0.85f
+      drawCartoonCloud(canvas, cx + 110f, cy, scale, 0xEBFFFFFF.toInt())
+      cx += cloudSpan
+      cIdx++
+    }
+
+    // Far rolling pastel mint hills (0.12x parallax)
+    paintHillFar.color = 0xFF8CD9B0.toInt()
+    val farSpan = 340f
+    val farOffset = (camX * 0.12f) % farSpan
+    var hx = -farOffset - farSpan
+    while (hx < viewW + farSpan) {
+      val baseY = viewH * 0.72f
+      pathTemp.reset()
+      pathTemp.moveTo(hx, viewH)
+      pathTemp.lineTo(hx, baseY)
+      pathTemp.quadTo(hx + farSpan * 0.5f, baseY - 84f, hx + farSpan, baseY)
+      pathTemp.lineTo(hx + farSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillFar)
+      hx += farSpan
+    }
+
+    // Mid-ground meadow ridge + minimal stylized cartoon trees (0.24x parallax)
+    paintHillMid.color = 0xFF63C391.toInt()
+    val midSpan = 260f
+    val midOffset = (camX * 0.24f) % midSpan
+    hx = -midOffset - midSpan
+    var idx = 0
+    while (hx < viewW + midSpan) {
+      val ridgeY = viewH * 0.78f
+      pathTemp.reset()
+      pathTemp.moveTo(hx, viewH)
+      pathTemp.lineTo(hx, ridgeY)
+      pathTemp.quadTo(hx + midSpan * 0.5f, ridgeY - 48f, hx + midSpan, ridgeY)
+      pathTemp.lineTo(hx + midSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillMid)
+
+      // Simple rounded cartoon tree perched cleanly on the distant ridge
+      val tx = hx + midSpan * 0.48f
+      val treeBaseY = ridgeY - 22f
+      val treeH = if (idx % 2 == 0) 58f else 46f
+      rectTemp.set(tx - 5f, treeBaseY - treeH, tx + 5f, treeBaseY + 12f)
+      canvas.drawRoundRect(rectTemp, 3f, 3f, paintTreeTrunk)
+
+      paintTreeCanopy.color = if (idx % 2 == 0) 0xFF3FA374.toInt() else 0xFF4BB382.toInt()
+      canvas.drawCircle(tx, treeBaseY - treeH - 12f, 24f, paintTreeCanopy)
+      canvas.drawCircle(tx - 15f, treeBaseY - treeH + 2f, 17f, paintTreeCanopy)
+      canvas.drawCircle(tx + 15f, treeBaseY - treeH + 2f, 17f, paintTreeCanopy)
+
+      hx += midSpan
+      idx++
     }
   }
 
   private fun drawCavernParallax(canvas: Canvas, viewW: Float, viewH: Float, camX: Float, tick: Int) {
-    // Distant stalactite vault & crystal spires
-    paintSilhouette.color = 0xFF0B1626.toInt()
-    val span = 180f
-    val offset1 = ((camX * 0.18f) % span)
+    // Soft glowing grotto moon / skylight halo
+    val moonX = viewW * 0.78f - ((camX * 0.02f) % 80f)
+    val moonY = viewH * 0.21f
+    paintSunHalo.color = 0x337DD3FC
+    canvas.drawCircle(moonX, moonY, 56f, paintSunHalo)
+    paintSunCore.color = 0xCCE0F2FE.toInt()
+    canvas.drawCircle(moonX, moonY, 24f, paintSunCore)
+
+    // Distant rounded cavern ceiling scallops & subtle crystal glints (0.15x parallax)
+    paintSilhouette.color = 0xFF1E4868.toInt()
+    val span = 210f
+    val offset1 = ((camX * 0.15f) % span)
     var x = -offset1 - span
     var idx = 0
     while (x < viewW + span) {
-      val toothH = 65f + (idx % 3) * 38f
+      val toothH = 54f + (idx % 3) * 28f
       pathTemp.reset()
       pathTemp.moveTo(x, 0f)
-      pathTemp.lineTo(x + span * 0.45f, toothH)
-      pathTemp.lineTo(x + span * 0.9f, 0f)
+      pathTemp.quadTo(x + span * 0.45f, toothH * 1.15f, x + span * 0.9f, 0f)
       pathTemp.close()
       canvas.drawPath(pathTemp, paintSilhouette)
 
-      // Distant echo crystal glint
       if (idx % 2 == 0) {
-        paintGlow.color = 0x442DD4BF
-        val pulse = 4f + (sin(tick * 0.05 + idx) * 2f).toFloat()
-        canvas.drawCircle(x + span * 0.45f, toothH + 6f, pulse, paintGlow)
+        paintGlow.color = 0x555EEAD4
+        val pulse = 4.5f + (sin(tick * 0.05 + idx) * 1.6f).toFloat()
+        canvas.drawCircle(x + span * 0.45f, toothH * 0.85f + 6f, pulse, paintGlow)
       }
       x += span
       idx++
     }
 
-    // Mid-ground subterranean arches
-    paintSilhouette.color = 0xFF102033.toInt()
-    val archSpan = 280f
-    val offset2 = ((camX * 0.36f) % archSpan)
+    // Far rolling twilight ridges (0.20x parallax)
+    paintHillFar.color = 0xFF235475.toInt()
+    val hillSpan = 320f
+    val hillOffset = (camX * 0.20f) % hillSpan
+    x = -hillOffset - hillSpan
+    while (x < viewW + hillSpan) {
+      val baseY = viewH * 0.74f
+      pathTemp.reset()
+      pathTemp.moveTo(x, viewH)
+      pathTemp.lineTo(x, baseY)
+      pathTemp.quadTo(x + hillSpan * 0.5f, baseY - 68f, x + hillSpan, baseY)
+      pathTemp.lineTo(x + hillSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillFar)
+      x += hillSpan
+    }
+
+    // Mid-ground stylized cavern pillars (0.32x parallax)
+    paintSilhouette.color = 0xFF2B6387.toInt()
+    val archSpan = 300f
+    val offset2 = ((camX * 0.32f) % archSpan)
     x = -offset2 - archSpan
     while (x < viewW + archSpan) {
-      rectTemp.set(x, viewH * 0.25f, x + 46f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
+      rectTemp.set(x, viewH * 0.32f, x + 42f, viewH)
+      canvas.drawRoundRect(rectTemp, 12f, 12f, paintSilhouette)
       x += archSpan
     }
   }
 
   private fun drawRuinsParallax(canvas: Canvas, viewW: Float, viewH: Float, camX: Float, tick: Int) {
-    // Golden desert/citadel sun halo
-    paintGlow.color = 0x33F59E0B
-    canvas.drawCircle(viewW * 0.78f, viewH * 0.24f, 92f, paintGlow)
-    paintGlow.color = 0x55FDE047
-    canvas.drawCircle(viewW * 0.78f, viewH * 0.24f, 44f, paintGlow)
+    // Clean cartoon sunset sun & warm pastel clouds
+    val sunX = viewW * 0.78f - ((camX * 0.02f) % 80f)
+    val sunY = viewH * 0.24f
+    paintSunHalo.color = 0x44FDE047
+    canvas.drawCircle(sunX, sunY, 64f, paintSunHalo)
+    paintSunCore.color = 0xEEFEF08A.toInt()
+    canvas.drawCircle(sunX, sunY, 34f, paintSunCore)
 
-    // Distant sandstone pyramids & broken obelisks
-    paintSilhouette.color = 0xFF3E2716.toInt()
-    val span = 240f
-    val offset1 = ((camX * 0.15f) % span)
-    var x = -offset1 - span
+    val cloudSpan = 440f
+    val cloudOffset = (camX * 0.06f + tick * 0.12f) % cloudSpan
+    var cx = -cloudOffset - cloudSpan * 0.5f
+    var cIdx = 0
+    while (cx < viewW + cloudSpan) {
+      val cy = viewH * (0.16f + (cIdx % 2) * 0.08f)
+      drawCartoonCloud(canvas, cx + 100f, cy, 0.9f, 0xB8FFE4C4.toInt())
+      cx += cloudSpan
+      cIdx++
+    }
+
+    // Far warm desert dunes (0.14x parallax)
+    paintHillFar.color = 0xFFD99B7E.toInt()
+    val duneSpan = 360f
+    val duneOffset = (camX * 0.14f) % duneSpan
+    var x = -duneOffset - duneSpan
+    while (x < viewW + duneSpan) {
+      val baseY = viewH * 0.74f
+      pathTemp.reset()
+      pathTemp.moveTo(x, viewH)
+      pathTemp.lineTo(x, baseY)
+      pathTemp.quadTo(x + duneSpan * 0.5f, baseY - 72f, x + duneSpan, baseY)
+      pathTemp.lineTo(x + duneSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillFar)
+      x += duneSpan
+    }
+
+    // Mid-ground sandstone ruins & colonnade arches (0.28x parallax)
+    paintSilhouette.color = 0xFFB87860.toInt()
+    val archSpan = 320f
+    val offset2 = ((camX * 0.28f) % archSpan)
+    x = -offset2 - archSpan
     var idx = 0
-    while (x < viewW + span) {
-      val topY = viewH * (0.34f + (idx % 3) * 0.08f)
-      rectTemp.set(x + 30f, topY, x + 84f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      rectTemp.set(x + 20f, topY - 10f, x + 94f, topY + 6f)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      x += span
+    while (x < viewW + archSpan) {
+      val topY = viewH * (0.48f + (idx % 2) * 0.06f)
+      rectTemp.set(x + 24f, topY, x + 58f, viewH)
+      canvas.drawRoundRect(rectTemp, 6f, 6f, paintSilhouette)
+      rectTemp.set(x + 174f, topY, x + 208f, viewH)
+      canvas.drawRoundRect(rectTemp, 6f, 6f, paintSilhouette)
+      rectTemp.set(x + 16f, topY - 8f, x + 216f, topY + 14f)
+      canvas.drawRoundRect(rectTemp, 8f, 8f, paintSilhouette)
+      x += archSpan
       idx++
     }
 
-    // Mid-ground carved colonnade arches
-    paintSilhouette.color = 0xFF4F311A.toInt()
-    val archSpan = 320f
-    val offset2 = ((camX * 0.35f) % archSpan)
-    x = -offset2 - archSpan
-    while (x < viewW + archSpan) {
-      rectTemp.set(x + 24f, viewH * 0.42f, x + 62f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      rectTemp.set(x + 180f, viewH * 0.42f, x + 218f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      rectTemp.set(x + 18f, viewH * 0.40f, x + 224f, viewH * 0.46f)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      x += archSpan
-    }
-
-    // Floating warm dust motes
-    paintGlow.color = 0x55FDE68A
-    for (i in 0..8) {
-      val mx = ((i * 157f - camX * 0.5f + tick * 0.35f) % viewW + viewW) % viewW
-      val my = viewH * 0.25f + (i % 4) * (viewH * 0.15f) + (sin(tick * 0.04 + i) * 10f).toFloat()
-      canvas.drawCircle(mx, my, 2.2f, paintGlow)
+    // Subtle floating warm dust motes
+    paintGlow.color = 0x66FEF9C3
+    for (i in 0..5) {
+      val mx = ((i * 211f - camX * 0.45f + tick * 0.3f) % viewW + viewW) % viewW
+      val my = viewH * 0.28f + (i % 3) * (viewH * 0.16f) + (sin(tick * 0.04 + i) * 10f).toFloat()
+      canvas.drawCircle(mx, my, 2.4f, paintGlow)
     }
   }
 
   private fun drawMonsoonParallax(canvas: Canvas, viewW: Float, viewH: Float, camX: Float, tick: Int) {
-    // Rolling storm clouds
-    paintSilhouette.color = 0xFF0C202B.toInt()
-    val cloudSpan = 260f
-    val offset1 = ((camX * 0.12f + tick * 0.45f) % cloudSpan)
+    // Clean layered cartoon storm clouds
+    val cloudSpan = 280f
+    val offset1 = ((camX * 0.10f + tick * 0.35f) % cloudSpan)
     var x = -offset1 - cloudSpan
     var idx = 0
     while (x < viewW + cloudSpan) {
-      val cy = viewH * (0.14f + (idx % 2) * 0.06f)
-      canvas.drawCircle(x + 70f, cy, 52f, paintSilhouette)
-      canvas.drawCircle(x + 135f, cy - 8f, 64f, paintSilhouette)
-      canvas.drawCircle(x + 205f, cy + 4f, 48f, paintSilhouette)
+      val cy = viewH * (0.14f + (idx % 2) * 0.07f)
+      drawCartoonCloud(canvas, x + 130f, cy, 1.35f, 0xFF395D80.toInt())
       x += cloudSpan
       idx++
     }
 
-    // Distant rain-veiled cliffs & aqueduct arches
-    paintSilhouette.color = 0xFF10303E.toInt()
+    // Far misty mountain ridge (0.16x parallax)
+    paintHillFar.color = 0xFF426E91.toInt()
+    val ridgeSpan = 340f
+    val ridgeOffset = (camX * 0.16f) % ridgeSpan
+    x = -ridgeOffset - ridgeSpan
+    while (x < viewW + ridgeSpan) {
+      val baseY = viewH * 0.72f
+      pathTemp.reset()
+      pathTemp.moveTo(x, viewH)
+      pathTemp.lineTo(x, baseY)
+      pathTemp.quadTo(x + ridgeSpan * 0.5f, baseY - 82f, x + ridgeSpan, baseY)
+      pathTemp.lineTo(x + ridgeSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillFar)
+      x += ridgeSpan
+    }
+
+    // Mid-ground aqueduct arches (0.28x parallax)
+    paintSilhouette.color = 0xFF5381A3.toInt()
     val span = 300f
     val offset2 = ((camX * 0.28f) % span)
     x = -offset2 - span
     while (x < viewW + span) {
-      rectTemp.set(x + 16f, viewH * 0.45f, x + 56f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      rectTemp.set(x + 140f, viewH * 0.50f, x + 188f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      rectTemp.set(x, viewH * 0.45f, x + 220f, viewH * 0.51f)
-      canvas.drawRect(rectTemp, paintSilhouette)
+      rectTemp.set(x + 18f, viewH * 0.52f, x + 54f, viewH)
+      canvas.drawRoundRect(rectTemp, 6f, 6f, paintSilhouette)
+      rectTemp.set(x + 144f, viewH * 0.52f, x + 180f, viewH)
+      canvas.drawRoundRect(rectTemp, 6f, 6f, paintSilhouette)
+      rectTemp.set(x + 6f, viewH * 0.49f, x + 196f, viewH * 0.55f)
+      canvas.drawRoundRect(rectTemp, 8f, 8f, paintSilhouette)
       x += span
     }
   }
 
   private fun drawTempleParallax(canvas: Canvas, viewW: Float, viewH: Float, camX: Float, tick: Int) {
-    // Diagonal sacred sunbeams streaming down from the sanctuary skylight
-    paintGlow.color = 0x1CFDE047
-    for (i in 0..3) {
-      val bx = ((i * 290f - camX * 0.12f) % (viewW + 300f) + (viewW + 300f)) % (viewW + 300f) - 100f
+    // Diagonal sacred sunbeams streaming gently across the twilight sky
+    paintGlow.color = 0x18FDE68A
+    for (i in 0..2) {
+      val bx = ((i * 360f - camX * 0.10f) % (viewW + 340f) + (viewW + 340f)) % (viewW + 340f) - 100f
       pathTemp.reset()
       pathTemp.moveTo(bx, 0f)
-      pathTemp.lineTo(bx + 78f, 0f)
-      pathTemp.lineTo(bx + 210f, viewH)
-      pathTemp.lineTo(bx + 90f, viewH)
+      pathTemp.lineTo(bx + 72f, 0f)
+      pathTemp.lineTo(bx + 190f, viewH)
+      pathTemp.lineTo(bx + 84f, viewH)
       pathTemp.close()
       canvas.drawPath(pathTemp, paintGlow)
     }
 
-    // Sanctum pillars & mandala frieze
-    paintSilhouette.color = 0xFF241B40.toInt()
-    val span = 260f
-    val offset = ((camX * 0.30f) % span)
-    var x = -offset - span
+    // Far twilight hills & temple domes (0.16x parallax)
+    paintHillFar.color = 0xFF473A8C.toInt()
+    val hillSpan = 340f
+    val hillOffset = (camX * 0.16f) % hillSpan
+    var x = -hillOffset - hillSpan
+    while (x < viewW + hillSpan) {
+      val baseY = viewH * 0.74f
+      pathTemp.reset()
+      pathTemp.moveTo(x, viewH)
+      pathTemp.lineTo(x, baseY)
+      pathTemp.quadTo(x + hillSpan * 0.5f, baseY - 68f, x + hillSpan, baseY)
+      pathTemp.lineTo(x + hillSpan, viewH)
+      pathTemp.close()
+      canvas.drawPath(pathTemp, paintHillFar)
+      x += hillSpan
+    }
+
+    // Mid-ground sanctum pillars & mandala frieze (0.28x parallax)
+    paintSilhouette.color = 0xFF5D4FA8.toInt()
+    val span = 280f
+    val offset = ((camX * 0.28f) % span)
+    x = -offset - span
     while (x < viewW + span) {
-      rectTemp.set(x + 30f, viewH * 0.14f, x + 76f, viewH)
-      canvas.drawRect(rectTemp, paintSilhouette)
-      canvas.drawCircle(x + 165f, viewH * 0.38f, 34f, paintSilhouette)
+      rectTemp.set(x + 30f, viewH * 0.24f, x + 70f, viewH)
+      canvas.drawRoundRect(rectTemp, 8f, 8f, paintSilhouette)
+      rectTemp.set(x + 22f, viewH * 0.22f, x + 78f, viewH * 0.27f)
+      canvas.drawRoundRect(rectTemp, 6f, 6f, paintSilhouette)
+      canvas.drawCircle(x + 170f, viewH * 0.44f, 28f, paintSilhouette)
       x += span
     }
 
-    // Radiant golden temple embers
-    paintGlow.color = 0x88FDE047.toInt()
-    for (i in 0..10) {
-      val fx = ((i * 149f - camX * 0.48f) % viewW + viewW) % viewW
-      val fy = ((viewH - ((tick * 0.9f + i * 71f) % viewH)) + viewH) % viewH
-      canvas.drawCircle(fx, fy, 2.3f, paintGlow)
+    // Gentle rising golden temple embers
+    paintGlow.color = 0x77FDE047
+    for (i in 0..5) {
+      val fx = ((i * 211f - camX * 0.42f) % viewW + viewW) % viewW
+      val fy = ((viewH - ((tick * 0.75f + i * 95f) % viewH)) + viewH) % viewH
+      canvas.drawCircle(fx, fy, 2.4f, paintGlow)
     }
   }
 
@@ -585,13 +762,13 @@ class ExpansionAtlasRenderer {
       camY: Float,
       animTick: Int
   ) {
-    // 1. Heavy Monsoon Rain streaks
+    // 1. Clean Monsoon Rain streaks (subtle and uncluttered)
     if (engine.level.hasHeavyRain) {
-      for (i in 0..38) {
-        val seed = i * 97
-        val rx = ((seed + animTick * 7f) % (viewW + 120f)) - 60f
-        val ry = ((i * 59f + animTick * 18f) % (viewH + 60f)) - 30f
-        canvas.drawLine(rx, ry, rx - 10f, ry + 26f, paintRain)
+      for (i in 0..21) {
+        val seed = i * 131
+        val rx = ((seed + animTick * 6f) % (viewW + 120f)) - 60f
+        val ry = ((i * 73f + animTick * 15f) % (viewH + 60f)) - 30f
+        canvas.drawLine(rx, ry, rx - 9f, ry + 22f, paintRain)
       }
     }
 

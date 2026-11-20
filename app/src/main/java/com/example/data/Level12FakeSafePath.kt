@@ -130,7 +130,7 @@ object Level12FakeSafePath {
             triggerMaxX = 23.1f * T,
             triggerMinY = 11.4f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (6 + lag).coerceAtLeast(6),
             killsPlayer = true,
             quipPopup = "NO CHECKPOINT!"
         ),
@@ -143,7 +143,7 @@ object Level12FakeSafePath {
             initialY = 13f * T,
             width = T * 3f,
             height = T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "NOT SAFE!"
         ),
@@ -175,7 +175,7 @@ object Level12FakeSafePath {
             initialY = 13f * T,
             width = T * 3f,
             height = T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "BAITED!"
         ),
@@ -254,7 +254,7 @@ object Level12FakeSafePath {
             triggerMaxX = 46.8f * T,
             triggerMinY = 9.0f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (6 + lag).coerceAtLeast(3),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "ONE MORE!"
         )

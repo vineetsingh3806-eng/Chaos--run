@@ -14,6 +14,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import com.example.data.ChallengeCatalog
+import com.example.data.RunCompletionSummary
+import com.example.data.RunLaunchMode
 import com.example.data.StoryClueId
 import com.example.ui.AppScreen
 import com.example.ui.GameStateViewModel
@@ -22,6 +25,7 @@ import com.example.ui.screens.FieldNotesModal
 import com.example.ui.screens.GameplayView
 import com.example.ui.screens.HowToPlayModal
 import com.example.ui.screens.MainMenuView
+import com.example.ui.screens.RunCompletionScreen
 import com.example.ui.screens.SettingsModal
 import com.example.ui.theme.MyApplicationTheme
 
@@ -70,6 +74,8 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
       val isChapterTrailOpen by viewModel.isChapterTrailOpen.collectAsState()
       val isUserPaused by viewModel.isUserPaused.collectAsState()
       val victoryResult by viewModel.victoryResult.collectAsState()
+      val runCompletionSummary by viewModel.runCompletionSummary.collectAsState()
+      val runLaunchMode by viewModel.runLaunchMode.collectAsState()
       val discoveredClues by viewModel.discoveredClues.collectAsState()
       val isResonanceFound by viewModel.isResonanceDiscovered.collectAsState()
       val levelsProgress by viewModel.levelsProgress.collectAsState()
@@ -96,9 +102,35 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
                 enabled = !isFieldNotesOpen && !isChapterTrailOpen &&
                     victoryResult != null
             ) {
-              viewModel.returnToMainMenu()
+              if (runLaunchMode == RunLaunchMode.REPLAY) {
+                viewModel.returnToRunCompletion()
+              } else {
+                viewModel.returnToMainMenu()
+              }
             }
             GameplayView(viewModel = viewModel)
+          }
+          AppScreen.RUN_COMPLETION -> {
+            BackHandler {
+              viewModel.returnToMainMenu()
+            }
+            val summary = runCompletionSummary ?: RunCompletionSummary(
+                completedCount = 0,
+                totalChallenges = ChallengeCatalog.entries.size,
+                totalRunTimeMs = 0L,
+                totalDeaths = 0,
+                totalScore = 0,
+                bestRunTimeMs = 0L,
+                bestRunScore = 0,
+                bestRunLeastDeaths = -1,
+                challengeRecords = emptyList()
+            )
+            RunCompletionScreen(
+                summary = summary,
+                onReplayChallenge = { challengeId -> viewModel.replayCompletedChallenge(challengeId) },
+                onStartNewRun = { viewModel.startNewContinuousRun() },
+                onMainMenu = { viewModel.returnToMainMenu() }
+            )
           }
           AppScreen.HOW_TO_PLAY -> {
             BackHandler {

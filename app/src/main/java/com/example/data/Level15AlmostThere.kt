@@ -121,7 +121,7 @@ object Level15AlmostThere {
             triggerMaxX = 12.6f * T,
             triggerMinY = 9.5f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (6 + lag).coerceAtLeast(6),
             targetX = 9.6f * T,
             targetY = 13f * T - 30f,
             moveSpeed = if (difficulty == DifficultyTier.NIGHTMARE) 10.0f else 8.5f,
@@ -187,10 +187,10 @@ object Level15AlmostThere {
             width = T,
             height = T,
             triggerMinX = 29.4f * T,
-            triggerMaxX = 30.8f * T,
+            triggerMaxX = 30.9f * T,
             triggerMinY = 11.4f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (6 + lag).coerceAtLeast(6),
             killsPlayer = true,
             quipPopup = "NICE TRY!"
         ),
@@ -222,7 +222,7 @@ object Level15AlmostThere {
             initialY = 13f * T,
             width = T * 1.8f,
             height = T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "SPIKED!"
         ),
@@ -247,11 +247,11 @@ object Level15AlmostThere {
             initialY = 10.0f * T,
             width = T * 2f,
             height = T * 3f,
-            triggerMinX = 45.6f * T,
+            triggerMinX = 45.2f * T,
             triggerMaxX = 48.2f * T,
             triggerMinY = 10.3f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (4 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (6 + lag).coerceAtLeast(6),
             killsPlayer = true,
             quipPopup = "ALMOST... FAKE!"
         ),
@@ -287,7 +287,7 @@ object Level15AlmostThere {
             triggerMaxX = 59.8f * T,
             triggerMinY = 6.0f * T,
             triggerMaxY = 10.0f * T,
-            telegraphDurationFrames = (5 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "LAST TROLL!"
         )

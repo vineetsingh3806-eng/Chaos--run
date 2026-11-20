@@ -753,8 +753,21 @@ data class TrollTrap(
     var morphSpikeHeight: Float = 0f,
     var hasRelocated: Boolean = false,
     var dropOffsetY: Float = 0f,
-    var fadeAlpha: Float = 1f
+    var fadeAlpha: Float = 1f,
+    var lockedTelegraphDurationFrames: Int = telegraphDurationFrames,
+    var lockedMoveSpeed: Float = moveSpeed,
+    var lockedCycleFrames: Int = cycleFrames
 ) {
+  fun applyLockedTuning(
+      telegraphFrames: Int,
+      moveSpeedScaled: Float,
+      cycleFramesScaled: Int
+  ) {
+    lockedTelegraphDurationFrames = telegraphFrames
+    lockedMoveSpeed = moveSpeedScaled
+    lockedCycleFrames = cycleFramesScaled
+  }
+
   fun reset() {
     x = initialX
     y = initialY
@@ -776,6 +789,44 @@ data class TrollTrap(
   }
 }
 
+data class TrapSnapshot(
+    val trapId: Int,
+    val x: Float,
+    val y: Float,
+    val vx: Float,
+    val vy: Float,
+    val state: TrollTrapState,
+    val stateTimerFrames: Int,
+    val isSolid: Boolean,
+    val isVisible: Boolean,
+    val morphSpikeHeight: Float,
+    val hasRelocated: Boolean,
+    val dropOffsetY: Float,
+    val fadeAlpha: Float
+)
+
+data class OrbitingPlatformSnapshot(
+    val platformId: Int,
+    val x: Float,
+    val y: Float,
+    val vx: Float,
+    val vy: Float,
+    val currentFrame: Int
+)
+
+data class PendulumSnapshot(
+    val pendulumId: Int,
+    val currentFrame: Int,
+    val bobX: Float,
+    val bobY: Float
+)
+
+data class LightningSnapshot(
+    val hazardId: Int,
+    val currentFrame: Int,
+    val phase: TrapPhase
+)
+
 data class LevelCheckpointSnapshot(
     val playerX: Float,
     val playerY: Float,
@@ -796,7 +847,136 @@ data class LevelCheckpointSnapshot(
     val triggeredFallingHazardIds: Set<Int> = emptySet(),
     val switchSnapshots: List<SwitchSnapshot> = emptyList(),
     val pillarSnapshots: List<PillarSnapshot> = emptyList(),
-    val collectedRelicsAtCheckpoint: Set<String> = emptySet()
+    val collectedRelicsAtCheckpoint: Set<String> = emptySet(),
+    val challengeTimerMs: Long = levelTimerMs,
+    val exitXAtCheckpoint: Float? = null,
+    val exitYAtCheckpoint: Float? = null,
+    val trollTrapSnapshots: List<TrapSnapshot> = emptyList(),
+    val orbitingPlatformSnapshots: List<OrbitingPlatformSnapshot> = emptyList(),
+    val pendulumSnapshots: List<PendulumSnapshot> = emptyList(),
+    val lightningSnapshots: List<LightningSnapshot> = emptyList()
+)
+
+enum class AdaptiveTier(
+    val tierIndex: Int,
+    val label: String,
+    val speedScale: Float,
+    val telegraphBonusFrames: Int
+) {
+  ASSISTED(tierIndex = 0, label = "ASSISTED", speedScale = 0.85f, telegraphBonusFrames = 4),
+  STANDARD(tierIndex = 1, label = "STANDARD", speedScale = 1.00f, telegraphBonusFrames = 0),
+  ESCALATED(tierIndex = 2, label = "ESCALATED", speedScale = 1.08f, telegraphBonusFrames = -2),
+  RELENTLESS(tierIndex = 3, label = "RELENTLESS", speedScale = 1.16f, telegraphBonusFrames = -3)
+}
+
+data class ChallengeDefinition(
+    val challengeId: String,
+    val orderIndex: Int,
+    val title: String,
+    val subtitle: String,
+    val theme: LevelTheme,
+    val challengeSeed: Long,
+    val configVersion: Int = 1,
+    val legacyWorldId: Int? = null,
+    val legacyLevelId: Int? = null,
+    val baseDifficulty: DifficultyTier = DifficultyTier.NORMAL,
+    val levelFactory: (DifficultyTier) -> LevelDefinition
+) {
+  fun buildLevel(difficulty: DifficultyTier = baseDifficulty): LevelDefinition = levelFactory(difficulty)
+
+  fun lockConfig(adaptiveTier: AdaptiveTier = AdaptiveTier.STANDARD): LockedChallengeConfig {
+    return LockedChallengeConfig(
+        challengeId = challengeId,
+        orderIndex = orderIndex,
+        challengeSeed = challengeSeed,
+        selectedAdaptiveTier = adaptiveTier,
+        configVersion = configVersion,
+        levelDefinition = buildLevel(baseDifficulty)
+    )
+  }
+}
+
+/**
+ * Immutable per-attempt configuration locked at attempt start so adaptive tier,
+ * seed, and trap layout never mutate mid-attempt.
+ */
+data class LockedChallengeConfig(
+    val challengeId: String,
+    val orderIndex: Int,
+    val challengeSeed: Long,
+    val selectedAdaptiveTier: AdaptiveTier,
+    val configVersion: Int,
+    val levelDefinition: LevelDefinition
+)
+
+enum class RunLaunchMode {
+  SINGLE_STAGE,
+  CONTINUOUS_PROGRESSION,
+  REPLAY
+}
+
+data class ChallengeRecord(
+    val challengeId: String,
+    val completed: Boolean = false,
+    val bestTimeMs: Long = 0L,
+    val bestScore: Int = 0,
+    val stars: Int = 0,
+    val leastDeaths: Int = -1
+)
+
+data class ChallengePerformanceRecord(
+    val challengeId: String,
+    val deaths: Int,
+    val timeMs: Long,
+    val parTimeSeconds: Int,
+    val tierUsed: AdaptiveTier,
+    val usedAssisted: Boolean
+)
+
+data class AdaptiveMetricsState(
+    val currentTier: AdaptiveTier = AdaptiveTier.STANDARD,
+    val activeChallengeId: String = "ch_01",
+    val currentChallengeDeaths: Int = 0,
+    val currentChallengeTrapDeaths: Map<String, Int> = emptyMap(),
+    val totalRunDeaths: Int = 0,
+    val totalRunCompletions: Int = 0,
+    val consecutiveStrongCompletions: Int = 0,
+    val escalationCooldownChallenges: Int = 0,
+    val demotionCooldownRetries: Int = 0,
+    val recentCompletions: List<ChallengePerformanceRecord> = emptyList()
+)
+
+data class ContinuousRunPersistedState(
+    val schemaVersion: Int,
+    val isRunActive: Boolean,
+    val isRunInForeground: Boolean,
+    val isRunCompleted: Boolean,
+    val activeChallengeId: String,
+    val activeChallengeSeed: Long,
+    val activeConfigVersion: Int,
+    val activeAdaptiveTier: AdaptiveTier,
+    val currentChallengeDeaths: Int,
+    val completedChallengeIds: Set<String>,
+    val challengeRecords: Map<String, ChallengeRecord>,
+    val cumulativeRunTimerMs: Long,
+    val cumulativeDeaths: Int,
+    val cumulativeScore: Int,
+    val bestRunTimeMs: Long,
+    val bestRunScore: Int,
+    val bestRunLeastDeaths: Int,
+    val adaptiveMetrics: AdaptiveMetricsState = AdaptiveMetricsState()
+)
+
+data class RunCompletionSummary(
+    val completedCount: Int,
+    val totalChallenges: Int,
+    val totalRunTimeMs: Long,
+    val totalDeaths: Int,
+    val totalScore: Int,
+    val bestRunTimeMs: Long,
+    val bestRunScore: Int,
+    val bestRunLeastDeaths: Int,
+    val challengeRecords: List<ChallengeRecord>
 )
 
 data class LevelDefinition(

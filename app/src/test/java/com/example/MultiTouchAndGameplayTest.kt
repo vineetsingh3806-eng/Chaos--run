@@ -455,7 +455,8 @@ class MultiTouchAndGameplayTest {
     assertEquals(2, engine.comboMultiplier)
     assertTrue("Camera shake subtly triggered", engine.cameraShakeFrames > 0)
 
-    // 2. Stomp Kanta Beetle from above -> stuns + bounces + x2 combo (+300 -> 400)
+    // 2. Stomp Kanta Beetle from above -> stuns + bounces + x2 combo (+300 -> 400),
+    // then same-frame updateCoins() collects Coin #9 overhead at (11T, 11.5T) at x3 combo (+300 -> 700, combo -> 4)
     val critter = engine.critters.first()
     engine.player.x = critter.x + 2f
     engine.player.y = critter.y - engine.player.collisionHeight - 1f
@@ -464,8 +465,8 @@ class MultiTouchAndGameplayTest {
     engine.update()
     assertTrue("Stomped beetle must be stunned", critter.stunFrames > 150)
     assertTrue("Aarav must bounce up off beetle", engine.player.vy < -10f)
-    assertEquals("100 + (150 * x2) = 400 score", 400, engine.score)
-    assertEquals(3, engine.comboMultiplier)
+    assertEquals("100 + (150 * x2) + (100 * x3 overhead coin) = 700 score", 700, engine.score)
+    assertEquals(4, engine.comboMultiplier)
 
     // 3. Monsoon WindDraft lifts falling player
     val draft = engine.windDrafts.first()

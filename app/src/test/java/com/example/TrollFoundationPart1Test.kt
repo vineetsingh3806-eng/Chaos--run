@@ -374,9 +374,10 @@ class TrollFoundationPart1Test {
     // Verify Main Menu Play -> Replay clean state via ViewModel
     val app = ApplicationProvider.getApplicationContext<Application>()
     val vm = GameStateViewModel(app)
-    vm.startLevel1(DifficultyTier.NORMAL)
+    vm.startLevel1()
     val eng = vm.gameEngine!!
     assertTrue(eng.level.isTrollLevel)
     assertEquals("The Easy Start", eng.level.title)
+    assertEquals(DifficultyTier.NORMAL, eng.level.difficulty)
   }
 }

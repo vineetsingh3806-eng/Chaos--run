@@ -1,6 +1,7 @@
 package com.example.engine
 
 import com.example.data.Player
+import com.example.data.TrapSnapshot
 import com.example.data.TrapTriggerType
 import com.example.data.TrollTrap
 import com.example.data.TrollTrapState
@@ -9,12 +10,18 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.hypot
 
+data class PendingTrapChainEvent(
+    val targetTrapId: Int,
+    val remainingDelayFrames: Int
+)
+
 /**
  * Side-effect callbacks emitted by [TrollTrapSystem] so trap mechanics remain
  * cleanly decoupled from player movement physics, audio synthesis, particles, and level gates.
  */
 interface TrollTrapCallbacks {
   fun killPlayer(quip: String)
+  fun killPlayer(quip: String, causeKey: String?) = killPlayer(quip)
   fun relocateExitGate(destX: Float, destY: Float)
   fun hideLinkedTile(tileId: Int)
   fun playTrapSnap()
@@ -47,6 +54,46 @@ class TrollTrapSystem {
     private const val CRUMBLE_DROP_DURATION_FRAMES = 10
   }
 
+  private val pendingChainEvents = mutableListOf<PendingTrapChainEvent>()
+
+  val pendingChainEventCount: Int
+    get() = pendingChainEvents.size
+
+  fun enqueueChainEvent(targetTrapId: Int, delayFrames: Int = 0) {
+    pendingChainEvents.add(
+        PendingTrapChainEvent(
+            targetTrapId = targetTrapId,
+            remainingDelayFrames = delayFrames.coerceAtLeast(0)
+        )
+    )
+  }
+
+  fun clearPendingChainEvents() {
+    pendingChainEvents.clear()
+  }
+
+  private fun tickChainEvents(traps: List<TrollTrap>, callbacks: TrollTrapCallbacks) {
+    if (pendingChainEvents.isEmpty()) return
+    val readyIds = mutableListOf<Int>()
+    val iter = pendingChainEvents.listIterator()
+    while (iter.hasNext()) {
+      val event = iter.next()
+      val nextDelay = event.remainingDelayFrames - 1
+      if (nextDelay <= 0) {
+        readyIds.add(event.targetTrapId)
+        iter.remove()
+      } else {
+        iter.set(event.copy(remainingDelayFrames = nextDelay))
+      }
+    }
+    for (targetId in readyIds) {
+      val trap = traps.firstOrNull { it.id == targetId } ?: continue
+      if (trap.state == TrollTrapState.ARMED) {
+        triggerTrap(trap, callbacks)
+      }
+    }
+  }
+
   /**
    * Resolves horizontal side collisions between Aarav and solid/visible [TrollTrap]s.
    * Returns true if a lethal moving crusher or falling block killed Aarav.
@@ -69,7 +116,7 @@ class TrollTrapSystem {
                 trap.type == TrollTrapType.FALLING_CEILING_BLOCK) &&
             trap.state == TrollTrapState.ACTIVE &&
             trap.killsPlayer) {
-          callbacks.killPlayer(trap.quipPopup ?: "BONK!")
+          callbacks.killPlayer(trap.quipPopup ?: "BONK!", causeKeyFor(trap))
           return true
         }
         if (player.vx > 0f) {
@@ -124,7 +171,7 @@ class TrollTrapSystem {
         if (trap.type == TrollTrapType.FALLING_CEILING_BLOCK &&
             trap.state == TrollTrapState.ACTIVE &&
             trap.killsPlayer) {
-          callbacks.killPlayer(trap.quipPopup ?: "BONK!")
+          callbacks.killPlayer(trap.quipPopup ?: "BONK!", causeKeyFor(trap))
           return true
         }
         player.y = trap.y + trap.height
@@ -142,6 +189,8 @@ class TrollTrapSystem {
       player: Player,
       callbacks: TrollTrapCallbacks
   ) {
+    tickChainEvents(traps, callbacks)
+
     val pLeft = player.x
     val pRight = player.x + player.collisionWidth
     val pTop = player.y
@@ -179,7 +228,52 @@ class TrollTrapSystem {
     }
   }
 
+  fun captureSnapshots(traps: List<TrollTrap>): List<TrapSnapshot> {
+    return traps.map { trap ->
+      TrapSnapshot(
+          trapId = trap.id,
+          x = trap.x,
+          y = trap.y,
+          vx = trap.vx,
+          vy = trap.vy,
+          state = trap.state,
+          stateTimerFrames = trap.stateTimerFrames,
+          isSolid = trap.isSolid,
+          isVisible = trap.isVisible,
+          morphSpikeHeight = trap.morphSpikeHeight,
+          hasRelocated = trap.hasRelocated,
+          dropOffsetY = trap.dropOffsetY,
+          fadeAlpha = trap.fadeAlpha
+      )
+    }
+  }
+
+  fun restoreSnapshots(traps: List<TrollTrap>, snapshots: List<TrapSnapshot>) {
+    clearPendingChainEvents()
+    val snapById = snapshots.associateBy { it.trapId }
+    for (trap in traps) {
+      val snap = snapById[trap.id]
+      if (snap != null) {
+        trap.x = snap.x
+        trap.y = snap.y
+        trap.vx = snap.vx
+        trap.vy = snap.vy
+        trap.state = snap.state
+        trap.stateTimerFrames = snap.stateTimerFrames
+        trap.isSolid = snap.isSolid
+        trap.isVisible = snap.isVisible
+        trap.morphSpikeHeight = snap.morphSpikeHeight
+        trap.hasRelocated = snap.hasRelocated
+        trap.dropOffsetY = snap.dropOffsetY
+        trap.fadeAlpha = snap.fadeAlpha
+      } else {
+        trap.reset()
+      }
+    }
+  }
+
   fun resetAll(traps: List<TrollTrap>) {
+    clearPendingChainEvents()
     for (trap in traps) {
       trap.reset()
     }
@@ -221,10 +315,13 @@ class TrollTrapSystem {
     }
   }
 
+  private fun causeKeyFor(trap: TrollTrap): String = "trap_${trap.id}_${trap.type.name}"
+
   private fun triggerTrap(trap: TrollTrap, callbacks: TrollTrapCallbacks) {
-    if (trap.telegraphDurationFrames > 0) {
+    val telegraphFrames = trap.lockedTelegraphDurationFrames
+    if (telegraphFrames > 0) {
       trap.state = TrollTrapState.TELEGRAPH
-      trap.stateTimerFrames = trap.telegraphDurationFrames
+      trap.stateTimerFrames = telegraphFrames
       when (trap.type) {
         TrollTrapType.DELAYED_CRUMBLE,
         TrollTrapType.DISAPPEARING_FLOOR -> {
@@ -366,12 +463,12 @@ class TrollTrapSystem {
 
       TrollTrapType.FALLING_CEILING_BLOCK -> {
         if (trap.y < trap.targetY) {
-          trap.vy = (trap.vy + 1.8f).coerceAtMost(trap.moveSpeed.coerceAtLeast(8f))
+          trap.vy = (trap.vy + 1.8f).coerceAtMost(trap.lockedMoveSpeed.coerceAtLeast(8f))
           trap.y = (trap.y + trap.vy).coerceAtMost(trap.targetY)
           if (trap.killsPlayer &&
               pRight > trap.x + 3f && pLeft < trap.x + trap.width - 3f &&
               pBottom > trap.y + 2f && pTop < trap.y + trap.height + 4f) {
-            callbacks.killPlayer(trap.quipPopup ?: "BONK!")
+            callbacks.killPlayer(trap.quipPopup ?: "BONK!", causeKeyFor(trap))
             return true
           }
           if (trap.y >= trap.targetY) {
@@ -387,20 +484,21 @@ class TrollTrapSystem {
         val dx = trap.targetX - trap.x
         val dy = trap.targetY - trap.y
         val dist = hypot(dx.toDouble(), dy.toDouble()).toFloat()
-        if (dist <= trap.moveSpeed) {
+        val speed = trap.lockedMoveSpeed
+        if (dist <= speed) {
           trap.x = trap.targetX
           trap.y = trap.targetY
           callbacks.playCeilingSlam()
           callbacks.triggerCameraShake(5, 3.0f)
           trap.state = TrollTrapState.RETIRED
         } else {
-          trap.x += (dx / dist) * trap.moveSpeed
-          trap.y += (dy / dist) * trap.moveSpeed
+          trap.x += (dx / dist) * speed
+          trap.y += (dy / dist) * speed
         }
         if (trap.killsPlayer &&
             pRight > trap.x + 3f && pLeft < trap.x + trap.width - 3f &&
             pBottom > trap.y + 4f && pTop < trap.y + trap.height - 4f) {
-          callbacks.killPlayer(trap.quipPopup ?: "SQUISHED!")
+          callbacks.killPlayer(trap.quipPopup ?: "SQUISHED!", causeKeyFor(trap))
           return true
         }
       }
@@ -410,9 +508,10 @@ class TrollTrapSystem {
           val dx = trap.targetX - trap.x
           val dy = trap.targetY - trap.y
           val dist = hypot(dx.toDouble(), dy.toDouble()).toFloat()
-          if (dist > trap.moveSpeed) {
-            trap.x += (dx / dist) * trap.moveSpeed
-            trap.y += (dy / dist) * trap.moveSpeed
+          val speed = trap.lockedMoveSpeed
+          if (dist > speed) {
+            trap.x += (dx / dist) * speed
+            trap.y += (dy / dist) * speed
           } else {
             trap.x = trap.targetX
             trap.y = trap.targetY
@@ -421,7 +520,7 @@ class TrollTrapSystem {
         if (trap.killsPlayer &&
             pRight > trap.x + 5f && pLeft < trap.x + trap.width - 5f &&
             pBottom > trap.y + 4f && pTop < trap.y + trap.height - 2f) {
-          callbacks.killPlayer(trap.quipPopup ?: "GOTCHA!")
+          callbacks.killPlayer(trap.quipPopup ?: "GOTCHA!", causeKeyFor(trap))
           return true
         }
       }
@@ -434,7 +533,7 @@ class TrollTrapSystem {
         if (trap.killsPlayer && trap.morphSpikeHeight > 4f &&
             pRight > trap.x + 5f && pLeft < trap.x + trap.width - 5f &&
             pBottom > spikeTop && pTop < trap.y + trap.height) {
-          callbacks.killPlayer(trap.quipPopup ?: "SURPRISE!")
+          callbacks.killPlayer(trap.quipPopup ?: "SURPRISE!", causeKeyFor(trap))
           return true
         }
         if (trap.activeDurationFrames > 0) {
@@ -454,7 +553,7 @@ class TrollTrapSystem {
           if (trap.morphSpikeHeight > 4f &&
               pRight > trap.x + 4f && pLeft < trap.x + trap.width - 4f &&
               pBottom > trap.y - trap.morphSpikeHeight + 3f && pTop < trap.y + 8f) {
-            callbacks.killPlayer(trap.quipPopup ?: "TRICKED!")
+            callbacks.killPlayer(trap.quipPopup ?: "TRICKED!", causeKeyFor(trap))
             return true
           }
         } else {
@@ -473,7 +572,7 @@ class TrollTrapSystem {
         if (trap.killsPlayer &&
             pRight > trap.x + 12f && pLeft < trap.x + trap.width - 12f &&
             pBottom > trap.y + 8f && pTop < trap.y + trap.height) {
-          callbacks.killPlayer(trap.quipPopup ?: "FAKE DOOR!")
+          callbacks.killPlayer(trap.quipPopup ?: "FAKE DOOR!", causeKeyFor(trap))
           return true
         }
         if (!trap.killsPlayer && trap.activeDurationFrames > 0) {
@@ -489,7 +588,7 @@ class TrollTrapSystem {
         if (trap.killsPlayer &&
             pRight > trap.x + 6f && pLeft < trap.x + trap.width - 6f &&
             pBottom > trap.y + 4f && pTop < trap.y + trap.height) {
-          callbacks.killPlayer(trap.quipPopup ?: "NOPE!")
+          callbacks.killPlayer(trap.quipPopup ?: "NOPE!", causeKeyFor(trap))
           return true
         }
         if (!trap.killsPlayer && trap.activeDurationFrames > 0) {
@@ -507,7 +606,7 @@ class TrollTrapSystem {
   }
 
   private fun updateTimedBlinkPlatform(trap: TrollTrap) {
-    val cycle = trap.cycleFrames.coerceAtLeast(120)
+    val cycle = trap.lockedCycleFrames.coerceAtLeast(120)
     val half = cycle / 2
     trap.stateTimerFrames = (trap.stateTimerFrames + 1) % cycle
     val solidWindow = trap.stateTimerFrames < half
@@ -520,7 +619,7 @@ class TrollTrapSystem {
   }
 
   private fun updateOscillatingSpike(trap: TrollTrap) {
-    val cycle = trap.cycleFrames.coerceAtLeast(90)
+    val cycle = trap.lockedCycleFrames.coerceAtLeast(90)
     trap.stateTimerFrames = (trap.stateTimerFrames + 1) % cycle
     val wave = (0.5 - 0.5 * cos(2.0 * PI * trap.stateTimerFrames / cycle)).toFloat()
     trap.x = trap.initialX + (trap.targetX - trap.initialX) * wave

@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -48,11 +49,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import com.example.data.DifficultyTier
+import com.example.data.ChallengeCatalog
 import com.example.data.GameplayNotification
+import com.example.data.LevelTheme
 import com.example.data.NotificationCategory
 import com.example.data.NotificationPriority
 import com.example.data.NotificationVisualKind
+import com.example.data.RunLaunchMode
 import com.example.data.StoryClueId
 import com.example.engine.GameSurfaceView
 import com.example.ui.GameStateViewModel
@@ -84,12 +87,12 @@ fun GameplayView(
     }
   }
 
-  // HUD state keyed to sessionId: snapshot updates only when discrete HUD counters or notification change;
-  // timerTenths updates separately and is read only inside HudTimerText to prevent 80ms full-tree recompositions.
+  // HUD state keyed to sessionId: snapshot updates when discrete HUD counters, notification, or challengeEpoch change.
   var hudSnapshot by remember(activeSession.sessionId) { mutableStateOf(engine.hudSnapshot) }
   var timerTenths by remember(activeSession.sessionId) { mutableIntStateOf(engine.hudSnapshot.timerTenths) }
-  val totalDiyas = engine.diyas.size
-  val totalRelics = engine.relics.size
+  val totalDiyas = remember(activeSession.sessionId, hudSnapshot.challengeEpoch) { engine.diyas.size }
+  val totalRelics = remember(activeSession.sessionId, hudSnapshot.challengeEpoch) { engine.relics.size }
+  val totalCoins = remember(activeSession.sessionId, hudSnapshot.challengeEpoch) { engine.coins.size }
 
   // Measured bounds in root coordinates (no hardcoded control positions)
   var rootBounds by remember { mutableStateOf(Rect.Zero) }
@@ -113,6 +116,10 @@ fun GameplayView(
               snap.relicsCollected != hudSnapshot.relicsCollected ||
               snap.deathCount != hudSnapshot.deathCount ||
               snap.isDying != hudSnapshot.isDying ||
+              snap.challengeEpoch != hudSnapshot.challengeEpoch ||
+              snap.challengeId != hudSnapshot.challengeId ||
+              snap.launchMode != hudSnapshot.launchMode ||
+              snap.cumulativeDeathCount != hudSnapshot.cumulativeDeathCount ||
               snap.activeNotification != hudSnapshot.activeNotification
       if (hudChanged) {
         hudSnapshot = snap
@@ -145,6 +152,30 @@ fun GameplayView(
             surfaceView.release()
           },
           modifier = Modifier.fillMaxSize()
+      )
+    }
+
+    // Smooth non-blocking theme-matched level/challenge transition veil (~180ms)
+    val transitionAlpha = remember(activeSession.sessionId, hudSnapshot.challengeEpoch) { Animatable(0.75f) }
+    LaunchedEffect(activeSession.sessionId, hudSnapshot.challengeEpoch) {
+      transitionAlpha.animateTo(
+          targetValue = 0f,
+          animationSpec = tween(durationMillis = 180)
+      )
+    }
+    if (transitionAlpha.value > 0.01f) {
+      val transitionTint = when (engine.level.theme) {
+        LevelTheme.WHISPERING_WOODS -> Color(0xFF7DD3FC)
+        LevelTheme.HOLLOW_OF_ECHOES -> Color(0xFF285C7E)
+        LevelTheme.RUINS_OF_LOST_KING -> Color(0xFFF4AA80)
+        LevelTheme.MONSOON_RUN -> Color(0xFF4B7699)
+        LevelTheme.TEMPLE_OF_LAST_LIGHT -> Color(0xFF564AA0)
+      }
+      Box(
+          modifier = Modifier
+              .fillMaxSize()
+              .background(transitionTint.copy(alpha = transitionAlpha.value))
+              .testTag("level_transition_veil")
       )
     }
 
@@ -228,7 +259,7 @@ fun GameplayView(
           )
           Spacer(modifier = Modifier.width(4.dp))
           Text(
-              text = "${hudSnapshot.coinsCollected} / ${engine.coins.size}",
+              text = "${hudSnapshot.coinsCollected} / $totalCoins",
               fontSize = 13.sp,
               fontWeight = FontWeight.Black,
               color = Color(0xFFFFFBEB)
@@ -368,17 +399,16 @@ fun GameplayView(
         }
       }
 
-      // Level Title Badge, Difficulty Indicator, Timer & Pause
+      // Level Title Badge, Timer & Pause
       Row(verticalAlignment = Alignment.CenterVertically) {
-        val tierColor = when (engine.level.difficulty) {
-          DifficultyTier.NORMAL -> Color(0xFF67E8F9)
-          DifficultyTier.HARD -> Color(0xFFF59E0B)
-          DifficultyTier.NIGHTMARE -> Color(0xFFF87171)
-        }
-        val levelLabel = if (engine.level.difficulty == DifficultyTier.NORMAL) {
-          "1-${engine.level.levelId}: ${engine.level.title}"
-        } else {
-          "1-${engine.level.levelId}: ${engine.level.title} • ${engine.level.difficulty.label}"
+        val tierColor = if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) Color(0xFFFDE047) else Color(0xFF67E8F9)
+        val levelLabel = when (hudSnapshot.launchMode) {
+          RunLaunchMode.CONTINUOUS_PROGRESSION ->
+            "CH ${hudSnapshot.challengeOrderIndex}/${ChallengeCatalog.entries.size}: ${engine.level.title}"
+          RunLaunchMode.REPLAY ->
+            "REPLAY • CH ${hudSnapshot.challengeOrderIndex}: ${engine.level.title}"
+          RunLaunchMode.SINGLE_STAGE ->
+            "1-${engine.level.levelId}: ${engine.level.title}"
         }
         Column(
             horizontalAlignment = Alignment.End,
@@ -387,6 +417,10 @@ fun GameplayView(
                 .background(Color(0xCC101E24))
                 .border(1.8.dp, Color(0xFF0D7377), RoundedCornerShape(12.dp))
                 .padding(horizontal = 10.dp, vertical = 4.dp)
+                .testTag(
+                    if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) "hud_replay_badge"
+                    else "hud_challenge_badge"
+                )
         ) {
           Text(
               text = levelLabel,
@@ -535,10 +569,33 @@ fun GameplayView(
                     .height(48.dp)
                     .testTag("button_restart")
             ) {
-              Text("RESTART LEVEL", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFFFFFBEB))
+              Text(
+                  text = if (hudSnapshot.launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION) {
+                    "RESTART CHALLENGE"
+                  } else {
+                    "RESTART LEVEL"
+                  },
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 15.sp,
+                  color = Color(0xFFFFFBEB)
+              )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
+
+            if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) {
+              OutlinedButton(
+                  onClick = { viewModel.returnToRunCompletion() },
+                  shape = RoundedCornerShape(12.dp),
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .height(48.dp)
+                      .testTag("button_return_summary")
+              ) {
+                Text("RUN SUMMARY", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF67E8F9))
+              }
+              Spacer(modifier = Modifier.height(10.dp))
+            }
 
             OutlinedButton(
                 onClick = { viewModel.returnToMainMenu() },
@@ -560,12 +617,16 @@ fun GameplayView(
       victoryResult?.let { result ->
         VictoryDialog(
             result = result,
-            onNextLevel = if (result.levelId < 5 && result.nextLevelUnlocked) {
+            onNextLevel = if (result.launchMode == RunLaunchMode.SINGLE_STAGE && result.levelId < 5 && result.nextLevelUnlocked) {
               { viewModel.startNextLevel() }
             } else null,
             onReplay = { viewModel.restartLevel() },
             onOpenFieldNotes = { viewModel.openFieldNotes() },
-            onMainMenu = { viewModel.returnToMainMenu() }
+            onMainMenu = if (result.launchMode == RunLaunchMode.REPLAY) {
+              { viewModel.returnToRunCompletion() }
+            } else {
+              { viewModel.returnToMainMenu() }
+            }
         )
       }
     }
@@ -611,7 +672,7 @@ fun VictoryDialog(
             color = Color(0xFFFFD700)
         )
         Text(
-            text = "1-${result.levelId}: ${result.levelTitle} Complete • ${result.difficulty.label}",
+            text = "1-${result.levelId}: ${result.levelTitle} Complete",
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
             color = Color(0xFF94A3B8)
@@ -776,7 +837,12 @@ fun VictoryDialog(
                   .height(48.dp)
                   .testTag("button_victory_main_menu")
           ) {
-            Text("MAIN MENU", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color(0xFFFDE047))
+            Text(
+                text = if (result.launchMode == RunLaunchMode.REPLAY) "RUN SUMMARY" else "MAIN MENU",
+                fontWeight = FontWeight.Black,
+                fontSize = 13.sp,
+                color = Color(0xFFFDE047)
+            )
           }
         }
 

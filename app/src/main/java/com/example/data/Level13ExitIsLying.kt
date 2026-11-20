@@ -91,11 +91,11 @@ object Level13ExitIsLying {
             initialY = 10.0f * T,
             width = T * 2f,
             height = T * 3f,
-            triggerMinX = 12.6f * T,
+            triggerMinX = 12.2f * T,
             triggerMaxX = 15.2f * T,
             triggerMinY = 10.3f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (4 + lag).coerceAtLeast(2),
+            telegraphDurationFrames = (6 + lag).coerceAtLeast(6),
             killsPlayer = true,
             quipPopup = "TOO EARLY!"
         ),
@@ -132,7 +132,7 @@ object Level13ExitIsLying {
             triggerMaxX = 27.2f * T,
             triggerMinY = 9.5f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (6 + lag).coerceAtLeast(3),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "SURPRISE!"
         ),
@@ -212,7 +212,7 @@ object Level13ExitIsLying {
             triggerMaxX = 52.3f * T,
             triggerMinY = 9.5f * T,
             triggerMaxY = 13.5f * T,
-            telegraphDurationFrames = (6 + lag).coerceAtLeast(3),
+            telegraphDurationFrames = (12 + lag).coerceAtLeast(12),
             killsPlayer = true,
             quipPopup = "ALMOST GOT ME!"
         )

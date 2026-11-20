@@ -97,14 +97,82 @@ class World1TrollPart2Test {
       jump: Boolean = false,
       maxFrames: Int = 220
   ) {
+    val t = World1Levels.TILE_SIZE
+    val startDeaths = engine.deathCount
     engine.inputLeft = false
     engine.inputRight = true
     engine.inputJump = jump
     var frames = 0
-    while (engine.player.x < targetX && frames < maxFrames && !engine.isDying && !engine.isVictorious) {
+    while (engine.player.x < targetX &&
+        frames < maxFrames &&
+        !engine.isDying &&
+        engine.deathCount == startDeaths &&
+        !engine.isVictorious) {
       engine.update()
       frames++
     }
+    assertFalse(
+        "Player died while running toward ${targetX / t}T (stopped at x=${engine.player.x / t}T, deaths=${engine.deathCount})",
+        engine.isDying || engine.deathCount > startDeaths
+    )
+    assertTrue(
+        "Timed out after $maxFrames frames running toward ${targetX / t}T (stuck at x=${engine.player.x / t}T)",
+        engine.player.x >= targetX || engine.isVictorious
+    )
+  }
+
+  private fun waitUntilGrounded(
+      engine: ChaosGameEngine,
+      right: Boolean = true,
+      left: Boolean = false,
+      maxFrames: Int = 120
+  ) {
+    val t = World1Levels.TILE_SIZE
+    val startDeaths = engine.deathCount
+    var frames = 0
+    while (!engine.player.isGrounded &&
+        !engine.isDying &&
+        engine.deathCount == startDeaths &&
+        !engine.isVictorious &&
+        frames < maxFrames) {
+      stepInputs(engine, frames = 1, right = right, left = left, jump = false)
+      frames++
+    }
+    assertFalse(
+        "Player died before landing (x=${engine.player.x / t}T, y=${engine.player.y / t}T, deaths=${engine.deathCount})",
+        engine.isDying || engine.deathCount > startDeaths
+    )
+    assertTrue(
+        "Timed out waiting to land after $maxFrames frames (x=${engine.player.x / t}T, y=${engine.player.y / t}T, vy=${engine.player.vy})",
+        engine.player.isGrounded || engine.isVictorious
+    )
+  }
+
+  private fun waitUntil(
+      engine: ChaosGameEngine,
+      maxFrames: Int = 240,
+      description: () -> String,
+      condition: () -> Boolean
+  ) {
+    val t = World1Levels.TILE_SIZE
+    val startDeaths = engine.deathCount
+    var frames = 0
+    while (!condition() &&
+        !engine.isDying &&
+        engine.deathCount == startDeaths &&
+        !engine.isVictorious &&
+        frames < maxFrames) {
+      stepInputs(engine, frames = 1)
+      frames++
+    }
+    assertFalse(
+        "Player died waiting for ${description()} at x=${engine.player.x / t}T (deaths=${engine.deathCount})",
+        engine.isDying || engine.deathCount > startDeaths
+    )
+    assertTrue(
+        "Timed out after $maxFrames frames waiting for ${description()} at x=${engine.player.x / t}T",
+        condition()
+    )
   }
 
   // --- 1. Level Loading & Metadata ---
@@ -305,15 +373,28 @@ class World1TrollPart2Test {
 
     // 1-4 ON_PROXIMITY_X falling ceiling block drops down to stone deck and rests there without locking path
     val e4 = engineFor(4)
+    val t4 = World1Levels.TILE_SIZE
+    val oscSpike = e4.trollTraps.first {
+      it.type == TrollTrapType.MOVING_SPIKE && it.triggerType == TrapTriggerType.ON_TIMER_CYCLE
+    }
     val proxCeiling = e4.trollTraps.first {
       it.type == TrollTrapType.FALLING_CEILING_BLOCK && it.triggerType == TrapTriggerType.ON_PROXIMITY_X
     }
-    e4.player.x = proxCeiling.triggerMinX + 6f
-    e4.player.y = 12.5f * World1Levels.TILE_SIZE - e4.player.collisionHeight
+    e4.player.x = 36.2f * t4
+    e4.player.y = 12.5f * t4 - e4.player.collisionHeight
     e4.player.isGrounded = true
-    e4.update()
-    e4.player.x = proxCeiling.triggerMinX - 80f
-    repeat(proxCeiling.telegraphDurationFrames + 35) { e4.update() }
+    waitUntil(e4, maxFrames = 80, description = {
+      "oscSpike sweep right >= 41.2T (oscX=${oscSpike.x / t4}T)"
+    }) { oscSpike.x >= 41.2f * t4 }
+    runUntilX(e4, 38.9f * t4, jump = false, maxFrames = 45)
+    assertEquals("Approaching ceiling trigger must enter TELEGRAPH", TrollTrapState.TELEGRAPH, proxCeiling.state)
+    stepInputs(e4, frames = 28, left = true)
+    waitUntil(e4, maxFrames = proxCeiling.telegraphDurationFrames + 40, description = {
+      "proxCeiling RETIRED (state=${proxCeiling.state}, y=${proxCeiling.y})"
+    }) { proxCeiling.state == TrollTrapState.RETIRED }
+    assertFalse("Aarav must survive baiting ON_PROXIMITY_X ceiling block", e4.isDying)
+    assertEquals("Aarav must have zero deaths", 0, e4.deathCount)
+    assertEquals("Oscillating spike must remain active", TrollTrapState.ACTIVE, oscSpike.state)
     assertEquals(proxCeiling.targetY, proxCeiling.y, 0.5f)
     assertEquals(TrollTrapState.RETIRED, proxCeiling.state)
     assertTrue("Landed block height must remain easily jumpable", proxCeiling.height <= 64f)
@@ -442,44 +523,34 @@ class World1TrollPart2Test {
     // Run to edge before first trapdoor (Tile 8.6), then jump right over Tiles 10-12 pit
     runUntilX(engine, 8.6f * t)
     stepInputs(engine, frames = 28, right = true, jump = true)
+    waitUntilGrounded(engine)
     // Walk calmly across Bait Coin stone (no jump!) so ON_JUMP_ABOVE ceiling stays harmlessly armed above
     runUntilX(engine, 20.5f * t, jump = false)
     // Jump over Fake Checkpoint Bell (Tile 22) and land on Upper Timber Step (24.5T, Y=11T)
     stepInputs(engine, frames = 30, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    waitUntilGrounded(engine)
     // Cross step -> Delayed Crumble 1 (27.2T) -> jump -> Delayed Crumble 2 (31T) -> land on Rejoin stone (34..37T)
     runUntilX(engine, 25.4f * t)
-    stepInputs(engine, frames = 20, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 10, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 28.4f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 12, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 32.3f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 12, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     // Clear Disappearing Floor (38..39T) onto Island (40..41T)
     runUntilX(engine, 36.8f * t)
-    stepInputs(engine, frames = 26, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 22, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     // Clear second Trapdoor (42..43T) onto Final Terrace (44..50T)
     runUntilX(engine, 40.8f * t)
-    stepInputs(engine, frames = 26, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 22, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     // Leap over pre-exit Surprise Spike (45.6T) straight into Sun Gate (47.5T)
-    runUntilX(engine, 44.5f * t)
-    stepInputs(engine, frames = 30, right = true, jump = true)
+    runUntilX(engine, 44.3f * t)
+    stepInputs(engine, frames = 26, right = true, jump = true)
+    waitUntilGrounded(engine)
     runUntilX(engine, 49.0f * t, jump = false, maxFrames = 80)
 
     assertFalse("Playthrough 1-2 must not die: x=${engine.player.x / t}", engine.isDying)
@@ -492,77 +563,60 @@ class World1TrollPart2Test {
     val engine = engineFor(3, DifficultyTier.NORMAL)
     val t = World1Levels.TILE_SIZE
 
-    // Jump onto raised step (10..11T, Y=11.5T)
+    // Controlled short hop onto raised step (10..11T, Y=11.5T) so we don't overshoot into Fake Exit Door
     runUntilX(engine, 8.6f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
-    // Jump high OVER Fake Exit Door (13..15T) from elevated step
+    stepInputs(engine, frames = 7, right = true, jump = true)
+    waitUntilGrounded(engine)
+    assertEquals(0, engine.deathCount)
+    // Jump cleanly OVER Fake Exit Door (13..15T) without overshooting into Pit 18T
     runUntilX(engine, 11.0f * t)
-    stepInputs(engine, frames = 36, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
-    // Clear pit Tile 18
+    stepInputs(engine, frames = 14, right = true, jump = true)
+    waitUntilGrounded(engine)
+    // Clear pit Tile 18 onto start of Crusher corridor (before trigger window 22.4..25.2T)
     runUntilX(engine, 16.9f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
-    // Trigger Crusher & Surprise Spike corridor by edging to 22.5T, then jump high left/right or leap clean over
+    stepInputs(engine, frames = 10, right = true, jump = true)
+    waitUntilGrounded(engine)
+    assertEquals(0, engine.deathCount)
+    // Bait Crusher & Surprise Spike corridor at 22.5T, then step back clear left (< 22T)
     runUntilX(engine, 22.5f * t)
     stepInputs(engine, frames = 20, left = true, right = false, jump = false)
-    // Let crusher slam safely onto 22T, and surprise spike pop at 26T after wait, then leap over crusher!
+    // Let crusher slam safely onto 22T, then hop cleanly over crusher without hitting 26T surprise spike
     stepInputs(engine, frames = 55, right = false, left = false, jump = false)
-    // Jump OVER stopped 80px crusher wall at 22T -> lands around 24.5T
-    stepInputs(engine, frames = 30, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
-    // Jump over Surprise Spike (26T) onto Delayed Crumble (31..32T)
+    stepInputs(engine, frames = 22, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
+    // Jump over Surprise Spike (26T) onto corridor end, then hop onto Delayed Crumble (31..32T)
     runUntilX(engine, 24.9f * t)
     stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 28.9f * t)
     stepInputs(engine, frames = 26, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    waitUntilGrounded(engine, right = false)
     // Clear Delayed Crumble -> jump to Threshold (34..42T)
     runUntilX(engine, 32.1f * t)
     stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    waitUntilGrounded(engine)
+    assertEquals(0, engine.deathCount)
     // Approach Initial Sun Gate (39.5T) -> Door Hop #1 to Upper Sky Terrace (45.5T, Y=7T)
     runUntilX(engine, 39.2f * t)
     assertEquals(45.5f * t, engine.currentExitX, 1f)
 
     // Climb stepping slab (42.3T, Y=11.5T) -> Upper Terrace (44..48T, Y=10T) -> Hop #2!
     runUntilX(engine, 41.2f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 42.8f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 45.2f * t)
     assertEquals(52.5f * t, engine.currentExitX, 1f)
 
-    // Drop to Disappearing pad/Final Terrace and leap over final pre-gate spike (51.2T) into true Exit (52.5T)
+    // Drop to Final Terrace and leap over final pre-gate spike (51.2T) into true Exit (52.5T)
     runUntilX(engine, 48.0f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) {
-      stepInputs(engine, frames = 1, right = true, jump = false)
-    }
+    stepInputs(engine, frames = 14, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 50.2f * t)
-    stepInputs(engine, frames = 28, right = true, jump = true)
+    stepInputs(engine, frames = 24, right = true, jump = true)
+    waitUntilGrounded(engine)
     runUntilX(engine, 53.5f * t, jump = false, maxFrames = 60)
 
     assertFalse("Playthrough 1-3 must not die: x=${engine.player.x / t}", engine.isDying)
@@ -575,65 +629,72 @@ class World1TrollPart2Test {
     val engine = engineFor(4, DifficultyTier.NORMAL)
     val t = World1Levels.TILE_SIZE
 
-    // Climb 3-step crumbling stairs cleanly without lingering
-    runUntilX(engine, 6.8f * t)
-    stepInputs(engine, frames = 20, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    runUntilX(engine, 10.1f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    runUntilX(engine, 15.1f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    runUntilX(engine, 20.1f * t)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    // Walk across launch pad directly onto Stair 1 (8..11T, Y=13T), then hop up Stairs 2 -> 3 -> Breather
+    runUntilX(engine, 10.0f * t)
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine)
+    runUntilX(engine, 15.0f * t)
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine)
+    runUntilX(engine, 20.0f * t)
+    stepInputs(engine, frames = 10, right = true, jump = true)
+    waitUntilGrounded(engine)
+    assertEquals(0, engine.deathCount)
 
-    // Wait on breather (22..25T) for Blink Pad A to begin its solid window, then hop onto A -> wait -> B -> Deck
+    // Settle on Breather (22..25T), wait for Pad A's early solid window, land atop Pad A
     val padA = engine.trollTraps.first { it.id == 4 }
     val padB = engine.trollTraps.first { it.id == 5 }
     runUntilX(engine, 25.0f * t)
-    while (!(padA.isSolid && padA.stateTimerFrames in 5..35)) {
-      stepInputs(engine, 1)
-    }
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    while (!(padB.isSolid && padB.stateTimerFrames in 5..35)) {
-      stepInputs(engine, 1)
-    }
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    // Jump cleanly OVER Tile 35 disappearing edge onto Stone Deck (36..44T)
-    if (engine.player.x < 35.8f * t) {
-      stepInputs(engine, frames = 22, right = true, jump = true)
-      while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    }
+    stepInputs(engine, frames = 6)
+    waitUntil(engine, maxFrames = 180, description = {
+      "Pad A early solid window (state=${padA.state}, timer=${padA.stateTimerFrames})"
+    }) { padA.isSolid && padA.stateTimerFrames in 5..25 }
+    stepInputs(engine, frames = 14, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
-    // Trigger proximity ceiling block (39.5T) and immediately step left so it slams ahead of us
-    runUntilX(engine, 39.55f * t)
-    stepInputs(engine, frames = 16, left = true)
+    // Jump near end of Pad A's solid phase so Pad B solidifies just as Aarav lands on it
+    waitUntil(engine, maxFrames = 120, description = {
+      "Pad A late solid window before swap (timerA=${padA.stateTimerFrames}, timerB=${padB.stateTimerFrames})"
+    }) { padA.isSolid && padA.stateTimerFrames in 50..68 }
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine, right = true)
+
+    // Hop cleanly over Tile 35 disappearing edge onto Stone Patrol Deck safe left edge (36..37T)
+    runUntilX(engine, 33.1f * t)
+    stepInputs(engine, frames = 20, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
+    assertEquals(0, engine.deathCount)
+
+    // Wait safely left of oscillating spike until it sweeps past 40.5T, bait proximity ceiling block, then retreat left
     val deckCeiling = engine.trollTraps.first { it.id == 8 }
     val oscSpike = engine.trollTraps.first { it.id == 7 }
-    while (deckCeiling.state != TrollTrapState.RETIRED || oscSpike.x < 40.5f * t) {
-      stepInputs(engine, 1)
-    }
-    // Wait until oscillating spike sweeps past left & right clear, then leap right over landed ceiling block!
-    while (oscSpike.x > 39.2f * t) {
-      stepInputs(engine, 1)
-    }
-    runUntilX(engine, 39.4f * t)
-    stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    waitUntil(engine, maxFrames = 180, description = {
+      "oscSpike sweep right >= 40.5T before bait (oscX=${oscSpike.x / t}T)"
+    }) { oscSpike.x >= 40.5f * t }
+    runUntilX(engine, 39.55f * t)
+    stepInputs(engine, frames = 28, left = true)
+    stepInputs(engine, frames = 6)
+    waitUntil(engine, maxFrames = 180, description = {
+      "deckCeiling RETIRED and oscSpike >= 40.5T (ceil=${deckCeiling.state}, oscX=${oscSpike.x / t}T)"
+    }) { deckCeiling.state == TrollTrapState.RETIRED && oscSpike.x >= 40.5f * t }
+    waitUntil(engine, maxFrames = 180, description = {
+      "oscSpike return left <= 39.2T (oscX=${oscSpike.x / t}T)"
+    }) { oscSpike.x <= 39.2f * t }
+
+    // Leap cleanly over both the returning oscillating spike and the landed ceiling block
+    stepInputs(engine, frames = 34, right = true, jump = true)
+    waitUntilGrounded(engine, right = true)
+    assertEquals(0, engine.deathCount)
 
     // Jump OVER Disappearing bridge (46..47T) onto Bait Island (48..50T)
     runUntilX(engine, 44.0f * t)
-    stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 24, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
     // Walk calmly across Island (do NOT jump under ON_JUMP_ABOVE thwomp at 48.8T!), then jump Trapdoor 51.4T -> Sanctum!
     runUntilX(engine, 50.0f * t, jump = false)
-    stepInputs(engine, frames = 30, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 28, right = true, jump = true)
+    waitUntilGrounded(engine, right = true)
     runUntilX(engine, 57.5f * t, jump = false, maxFrames = 60)
 
     assertFalse("Playthrough 1-4 must not die: x=${engine.player.x / t}", engine.isDying)
@@ -646,73 +707,76 @@ class World1TrollPart2Test {
     val engine = engineFor(5, DifficultyTier.NORMAL)
     val t = World1Levels.TILE_SIZE
 
-    // 1. Jump cleanly OVER disappearing planks (7..8T) onto Ambush terrace (9..14T)
+    // 1. Jump cleanly OVER disappearing planks (7..8T) onto start of Ambush terrace (before 9.8T trigger)
     runUntilX(engine, 5.8f * t)
-    stepInputs(engine, frames = 26, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 20, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
-    // 2. Trigger proximity Moving Spike (9.8T) and jump cleanly over it while running right!
-    runUntilX(engine, 10.1f * t)
-    stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    // 2. Trigger proximity Moving Spike (9.8T) and jump cleanly over it while running right
+    runUntilX(engine, 9.35f * t)
+    stepInputs(engine, frames = 26, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
     // 3. Synchronize at edge 13.8T so Blink Platform (20..22.5T, cycle=140, solid 0..69) is solid on landing
     runUntilX(engine, 13.8f * t)
     val blink = engine.trollTraps.first { it.type == TrollTrapType.TIMED_BLINK_PLATFORM }
-    while (blink.stateTimerFrames !in 105..120) {
-      stepInputs(engine, 1)
-    }
+    waitUntil(engine, maxFrames = 180, description = {
+      "blink platform sync window 80..95 (timer=${blink.stateTimerFrames}, state=${blink.state})"
+    }) { blink.stateTimerFrames in 80..95 }
 
     // Jump pit -> Delayed Crumble (16..17T, Y=12.2T) -> Blink Platform (20..22.5T, Y=12.0T)
-    stepInputs(engine, frames = 22, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 16, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 17.0f * t)
     stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    waitUntilGrounded(engine, right = false)
 
-    // 5. Hop across onto Crusher terrace (23..30T) -> bait crusher at 24.85T & back off cleanly
-    runUntilX(engine, 22.0f * t)
-    stepInputs(engine, frames = 20, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    runUntilX(engine, 24.9f * t)
-    stepInputs(engine, frames = 16, left = true)
+    // 5. Hop across onto start of Crusher terrace (23..24.1T) -> bait crusher & retreat safely left
+    runUntilX(engine, 21.8f * t)
+    stepInputs(engine, frames = 10, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
+    runUntilX(engine, 24.3f * t)
+    stepInputs(engine, frames = 20, left = true)
     val crush = engine.trollTraps.first { it.type == TrollTrapType.MOVING_CRUSH_WALL }
-    while (crush.state != TrollTrapState.RETIRED) stepInputs(engine, 1)
+    waitUntil(engine, maxFrames = 120, description = {
+      "crush wall RETIRED (state=${crush.state}, x=${crush.x / t}T)"
+    }) { crush.state == TrollTrapState.RETIRED }
 
-    // Jump OVER stopped 80px crush wall (24.5T) -> land cleanly -> jump OVER Fake Bell (29.8T) + Pit (31T) onto 32T!
-    stepInputs(engine, frames = 30, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    // Jump OVER stopped 80px crush wall (24.5T) -> land cleanly -> jump OVER Fake Bell (29.8T) + Pit (31T) onto 32T
+    stepInputs(engine, frames = 28, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 28.8f * t)
     stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    waitUntilGrounded(engine, right = false)
 
-    // 6. Walk flat under ON_JUMP_ABOVE ceiling block (33.8T) to edge 36.1T
+    // 6. Walk flat under ON_JUMP_ABOVE ceiling block (33.8T) to edge 36.0T
     runUntilX(engine, 36.0f * t, jump = false)
-    // Jump over Spiked Fake Safe (38..39.8T) onto Delayed Crumble (40.2..41.8T) -> jump onto Lower Arena (43..44T, Y=11.5T)
-    stepInputs(engine, frames = 28, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    // Jump over Spiked Fake Safe (38..39.8T) onto Delayed Crumble (40.2..41.8T) -> jump onto Lower Arena / Step (43..44T, Y=11.5T)
+    stepInputs(engine, frames = 26, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 40.9f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 20, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
-    // 7. Jump from raised step (44T, Y=11.5T) cleanly OVER Fake Exit Door (46T) -> lands ~49..50T
+    // 7. Jump from raised step (44T, Y=11.5T) cleanly OVER Fake Exit Door (46T) -> lands ~48T
     runUntilX(engine, 44.0f * t)
-    stepInputs(engine, frames = 34, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 30, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
 
-    // 8. Trigger Final Relocating Door (51.5T -> High Sanctum 60.5T, Y=6.5T)!
+    // 8. Trigger Final Relocating Door (51.5T -> High Sanctum 60.5T, Y=6.5T)
     runUntilX(engine, 51.0f * t)
     assertEquals(60.5f * t, engine.currentExitX, 1f)
 
-    // 9. Climb stepping stone (54.5T, Y=11.2T) -> High Sanctum (57..64T, Y=9.5T) -> jump over final spike (58.4T) into Sun Gate!
+    // 9. Climb stepping stone (54.5T, Y=11.2T) -> High Sanctum edge (57T, Y=9.5T) -> jump over final spike (58.4T) into Sun Gate
     runUntilX(engine, 53.0f * t)
-    stepInputs(engine, frames = 20, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
+    stepInputs(engine, frames = 18, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
     runUntilX(engine, 55.1f * t)
-    stepInputs(engine, frames = 24, right = true, jump = true)
-    while (!engine.player.isGrounded && !engine.isDying) stepInputs(engine, 1, right = true)
-    runUntilX(engine, 57.3f * t)
-    stepInputs(engine, frames = 28, right = true, jump = true)
+    stepInputs(engine, frames = 10, right = true, jump = true)
+    waitUntilGrounded(engine, right = false)
+    runUntilX(engine, 57.1f * t)
+    stepInputs(engine, frames = 26, right = true, jump = true)
+    waitUntilGrounded(engine)
     runUntilX(engine, 61.5f * t, jump = false, maxFrames = 60)
 
     assertFalse("Playthrough 1-5 must not die: x=${engine.player.x / t}", engine.isDying)
@@ -772,6 +836,11 @@ class World1TrollPart2Test {
       vm.startLevel(levelId = id, enforceUnlock = true)
       assertEquals(AppScreen.GAMEPLAY, vm.currentScreen.value)
       val e = vm.gameEngine!!
+      val firstCoin = e.coins.first()
+      e.player.x = firstCoin.x - e.player.collisionWidth / 2f
+      e.player.y = firstCoin.y - e.player.collisionHeight / 2f
+      e.update()
+      assertTrue("Collecting coin through ChaosGameEngine on 1-$id must raise score", e.score > 0)
       e.coins.forEach { it.isCollected = true }
       var hops = 0
       while (hops < 3) {

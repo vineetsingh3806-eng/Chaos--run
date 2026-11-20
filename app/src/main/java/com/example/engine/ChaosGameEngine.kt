@@ -2,8 +2,14 @@ package com.example.engine
 
 import com.example.audio.ProceduralAudioEngine
 import com.example.data.*
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.PI
 import kotlin.math.sin
+
+data class AttemptRetryTransition(
+    val lockedConfig: LockedChallengeConfig,
+    val attemptToken: Long
+)
 
 data class EngineHudSnapshot(
     val coinsCollected: Int,
@@ -17,7 +23,14 @@ data class EngineHudSnapshot(
     val relicsCollected: Int,
     val activeNotification: GameplayNotification?,
     val deathCount: Int = 0,
-    val isDying: Boolean = false
+    val isDying: Boolean = false,
+    val challengeEpoch: Long = 0L,
+    val challengeId: String = "ch_01",
+    val challengeOrderIndex: Int = 1,
+    val launchMode: RunLaunchMode = RunLaunchMode.SINGLE_STAGE,
+    val cumulativeDeathCount: Int = 0,
+    val cumulativeRunTimerMs: Long = 0L,
+    val activeAdaptiveTier: AdaptiveTier = AdaptiveTier.STANDARD
 )
 
 /**
@@ -27,7 +40,7 @@ data class EngineHudSnapshot(
  * permanent story clue tracking, and deterministic checkpoint rollback.
  */
 class ChaosGameEngine(
-    val level: LevelDefinition,
+    level: LevelDefinition,
     val audioEngine: ProceduralAudioEngine,
     initialDiscoveredClues: Set<StoryClueId> = emptySet(),
     initialResonanceDiscovered: Boolean = false,
@@ -37,7 +50,18 @@ class ChaosGameEngine(
     initialDiscoveredRelics: Set<String> = emptySet(),
     val onRelicDiscovered: (LevelRelic) -> Unit = {},
     val onPlayerDied: (totalSessionDeaths: Int) -> Unit = {},
-    val onLevelCompleted: (timeMs: Long, coinsCollected: Int, totalCoins: Int) -> Unit
+    lockedChallengeConfig: LockedChallengeConfig? = null,
+    initialCompletedChallengeIds: Set<String> = emptySet(),
+    initialCumulativeRunTimerMs: Long = 0L,
+    initialCumulativeDeathCount: Int = 0,
+    val deathAnimDurationFrames: Int = DEFAULT_DEATH_ANIM_FRAMES,
+    initialAttemptToken: Long = 1L,
+    initialLaunchMode: RunLaunchMode = RunLaunchMode.SINGLE_STAGE,
+    initialChallengeDeaths: Int = 0,
+    val onChallengeDeathUpdated: (challengeId: String, challengeDeaths: Int, cumulativeDeaths: Int) -> Unit = { _, _, _ -> },
+    val onChallengeDeathAttributed: (challengeId: String, challengeDeaths: Int, cumulativeDeaths: Int, causeKey: String?) -> Unit = { _, _, _, _ -> },
+    val onAttemptRetryConfigRequested: ((challengeId: String, challengeDeaths: Int, causeKey: String?) -> AttemptRetryTransition?)? = null,
+    val onLevelCompleted: (timeMs: Long, coinsCollected: Int, totalCoins: Int) -> Unit = { _, _, _ -> }
 ) {
   companion object {
     const val GRAVITY = 0.58f
@@ -53,74 +77,116 @@ class ChaosGameEngine(
     const val CRUMBLE_DELAY_FRAMES = 45 // 0.75 s
     const val VANISHING_SLAB_DELAY_FRAMES = 34 // ~0.57 s progressive bridge collapse (Normal)
     const val PIT_KILL_Y = 760f
-    const val DEATH_ANIM_FRAMES = 24 // ~0.40s snappy comedic spin + auto-respawn
+    const val DEFAULT_DEATH_ANIM_FRAMES = 10 // ~167ms snappy comedic spin + instant auto-retry
+    const val DEATH_ANIM_FRAMES = DEFAULT_DEATH_ANIM_FRAMES
     const val WHISPER_DURATION_FRAMES = 120 // ~2.0 seconds at 60 FPS (compact lower safe-area toast)
     const val COMBO_WINDOW_FRAMES = 135 // ~2.25 seconds at 60 FPS
   }
 
+  var level: LevelDefinition = level
+    private set
+
+  var lockedChallengeConfig: LockedChallengeConfig? = lockedChallengeConfig
+    private set
+
   val player = Player(
-      x = level.spawnX,
-      y = level.spawnY,
-      health = level.difficulty.startingHealth,
-      maxHealth = level.difficulty.startingHealth
+      x = this.level.spawnX,
+      y = this.level.spawnY,
+      health = this.level.difficulty.startingHealth,
+      maxHealth = this.level.difficulty.startingHealth
   )
-  val tiles: List<GameTile> = level.tiles.map { it.copy() }
-  val coins: List<Coin> = level.coins.map { it.copy() }
-  val movingPlatforms: List<MovingPlatform> = level.movingPlatforms.map { it.copy() }
-  val bounceDrums: List<BounceDrum> = level.bounceDrums.map { it.copy() }
-  val critters: List<ForestCritter> = level.critters.map { it.copy() }
-  val windDrafts: List<WindDraft> = level.windDrafts.map { it.copy() }
-  val pendulums: List<SwingingPendulum> = level.pendulums.map { it.copy() }
-  val diyas: List<ForestDiya> = level.diyas.map { it.copy() }
-  val fallingHazards: List<FallingHazard> = level.fallingHazards.map { it.copy() }
-  val ambushTraps: List<AmbushSpikeTrap> = level.ambushTraps.map { it.copy() }
-  val soundSwitches: List<SoundSwitchNode> = level.soundSwitches.map { it.copy() }
-  val orbitingPlatforms: List<OrbitingPlatform> = level.orbitingPlatforms.map { it.copy() }
-  val collapsingPillars: List<CollapsingPillar> = level.collapsingPillars.map { it.copy() }
-  val waterCurrents: List<WaterCurrentZone> = level.waterCurrents.map { it.copy() }
-  val lightningHazards: List<LightningHazard> = level.lightningHazards.map { it.copy() }
-  val relics: List<LevelRelic> = level.relics.map { it.copy() }
-  val trollTraps: List<TrollTrap> = level.trollTraps.map { it.copy() }
-  val resonanceStone: ResonanceStone? = level.resonanceStone?.copy()
-  val echoPuzzleNode: EchoPuzzleNode? = level.echoPuzzleNode?.copy()
+  var tiles: List<GameTile> = this.level.tiles.map { it.copy() }
+    private set
+  var coins: List<Coin> = this.level.coins.map { it.copy() }
+    private set
+  var movingPlatforms: List<MovingPlatform> = this.level.movingPlatforms.map { it.copy() }
+    private set
+  var bounceDrums: List<BounceDrum> = this.level.bounceDrums.map { it.copy() }
+    private set
+  var critters: List<ForestCritter> = this.level.critters.map { it.copy() }
+    private set
+  var windDrafts: List<WindDraft> = this.level.windDrafts.map { it.copy() }
+    private set
+  var pendulums: List<SwingingPendulum> = this.level.pendulums.map { it.copy() }
+    private set
+  var diyas: List<ForestDiya> = this.level.diyas.map { it.copy() }
+    private set
+  var fallingHazards: List<FallingHazard> = this.level.fallingHazards.map { it.copy() }
+    private set
+  var ambushTraps: List<AmbushSpikeTrap> = this.level.ambushTraps.map { it.copy() }
+    private set
+  var soundSwitches: List<SoundSwitchNode> = this.level.soundSwitches.map { it.copy() }
+    private set
+  var orbitingPlatforms: List<OrbitingPlatform> = this.level.orbitingPlatforms.map { it.copy() }
+    private set
+  var collapsingPillars: List<CollapsingPillar> = this.level.collapsingPillars.map { it.copy() }
+    private set
+  var waterCurrents: List<WaterCurrentZone> = this.level.waterCurrents.map { it.copy() }
+    private set
+  var lightningHazards: List<LightningHazard> = this.level.lightningHazards.map { it.copy() }
+    private set
+  var relics: List<LevelRelic> = this.level.relics.map { it.copy() }
+    private set
+  var trollTraps: List<TrollTrap> = this.level.trollTraps.map { it.copy() }
+    private set
+
+  init {
+    lockedChallengeConfig?.let {
+      TrapFairnessPolicy.applyTierTuningInPlace(trollTraps, it.selectedAdaptiveTier)
+    }
+  }
+
+  var resonanceStone: ResonanceStone? = this.level.resonanceStone?.copy()
+    private set
+  var echoPuzzleNode: EchoPuzzleNode? = this.level.echoPuzzleNode?.copy()
+    private set
   val watcherAppearance = WatcherAppearance()
 
-  var deathCount: Int = 0
+  var deathCount: Int = initialChallengeDeaths
     private set
   var isDying: Boolean = false
     private set
   var deathAnimFrames: Int = 0
     private set
-  var currentExitX: Float = level.exitX
+  var lastDeathCauseKey: String? = null
     private set
-  var currentExitY: Float = level.exitY
+  private var pendingDeathCauseKey: String? = null
+  var currentExitX: Float = this.level.exitX
+    private set
+  var currentExitY: Float = this.level.exitY
     private set
 
   // Set pieces (Awakening Tree, Vanar Forest Stalker, Vanishing Causeway + Stone Guardian)
   val awakeningTree = AwakeningTreeState()
   val forestStalker = ForestStalkerState()
-  private val guardianCfg = level.guardianConfig
-  val stoneGuardian: StoneGuardianState = if (guardianCfg != null) {
-    val hits = when (level.difficulty) {
-      DifficultyTier.NORMAL -> guardianCfg.baseHitsNormal
-      DifficultyTier.HARD -> guardianCfg.baseHitsHard
-      DifficultyTier.NIGHTMARE -> guardianCfg.baseHitsNightmare
+  private var guardianCfg = this.level.guardianConfig
+  var stoneGuardian: StoneGuardianState = buildStoneGuardianState(this.level)
+    private set
+
+  private fun buildStoneGuardianState(lvl: LevelDefinition): StoneGuardianState {
+    val cfg = lvl.guardianConfig
+    return if (cfg != null) {
+      val hits = when (lvl.difficulty) {
+        DifficultyTier.NORMAL -> cfg.baseHitsNormal
+        DifficultyTier.HARD -> cfg.baseHitsHard
+        DifficultyTier.NIGHTMARE -> cfg.baseHitsNightmare
+      }
+      StoneGuardianState(
+          x = cfg.x,
+          groundY = cfg.groundY,
+          crystalX = cfg.crystalX,
+          crystalY = cfg.crystalY,
+          hitsRemaining = hits,
+          maxHits = hits,
+          triggerMinX = cfg.triggerMinX,
+          triggerMaxX = cfg.triggerMaxX,
+          reboundX = cfg.reboundX,
+          despawnMinX = cfg.despawnMinX,
+          isTempleBoss = cfg.isTempleBoss
+      )
+    } else {
+      StoneGuardianState(hitsRemaining = 1, maxHits = 1)
     }
-    StoneGuardianState(
-        x = guardianCfg.x,
-        groundY = guardianCfg.groundY,
-        crystalX = guardianCfg.crystalX,
-        crystalY = guardianCfg.crystalY,
-        hitsRemaining = hits,
-        maxHits = hits,
-        triggerMinX = guardianCfg.triggerMinX,
-        triggerMaxX = guardianCfg.triggerMaxX,
-        reboundX = guardianCfg.reboundX,
-        despawnMinX = guardianCfg.despawnMinX,
-        isTempleBoss = guardianCfg.isTempleBoss
-    )
-  } else {
-    StoneGuardianState(hitsRemaining = 1, maxHits = 1)
   }
 
   var isStandingOnSlippery: Boolean = false
@@ -166,6 +232,17 @@ class ChaosGameEngine(
     private set
   private var landingSquashFrames: Int = 0
 
+  var activeChallengeId: String =
+      this.lockedChallengeConfig?.challengeId ?: "ch_${this.level.levelId.toString().padStart(2, '0')}"
+    private set
+  val completedChallengeIds: MutableSet<String> = initialCompletedChallengeIds.toMutableSet()
+  var challengeAttemptToken: Long = initialAttemptToken
+    private set
+  var challengeEpoch: Long = 0L
+    private set
+  var launchMode: RunLaunchMode = initialLaunchMode
+    private set
+
   // Particle & popup pools (pre-allocated for zero-GC 60 FPS loop)
   val particles = Array(64) { Particle() }
   private var nextParticleIndex = 0
@@ -173,6 +250,12 @@ class ChaosGameEngine(
   private var nextPopupIndex = 0
 
   var levelTimerMs = 0L
+  var challengeTimerMs = 0L
+    private set
+  var cumulativeRunTimerMs = initialCumulativeRunTimerMs
+    private set
+  var cumulativeDeathCount = initialCumulativeDeathCount
+    private set
   @Volatile var isPaused = false
   @Volatile var isGameOver = false
   @Volatile var isVictorious = false
@@ -187,11 +270,37 @@ class ChaosGameEngine(
   @Volatile var inputJump = false
   private var previousInputJump = false
 
+  private val pendingCameraSnap = AtomicBoolean(true)
   private val worldStateLock = Any()
 
+  private data class PendingChallengeLoad(
+      val lockedConfig: LockedChallengeConfig,
+      val attemptToken: Long,
+      val launchMode: RunLaunchMode,
+      val discoveredRelics: Set<String>,
+      val preserveCumulativeStats: Boolean,
+      val initialDeathsInChallenge: Int,
+      val cumulativeTimerMs: Long?,
+      val cumulativeDeaths: Int?
+  )
+
+  private var isInsideUpdate = false
+  private var pendingChallengeLoad: PendingChallengeLoad? = null
+
   private val trapSystem = TrollTrapSystem()
+
+  fun consumePendingCameraSnap(): Boolean = pendingCameraSnap.getAndSet(false)
+  fun hasPendingCameraSnap(): Boolean = pendingCameraSnap.get()
+
+  fun enqueueTrapChainEvent(targetTrapId: Int, delayFrames: Int = 0) = synchronized(worldStateLock) {
+    trapSystem.enqueueChainEvent(targetTrapId, delayFrames)
+  }
+
+  val pendingTrapChainEventCount: Int
+    get() = trapSystem.pendingChainEventCount
   private val trapCallbacks = object : TrollTrapCallbacks {
-    override fun killPlayer(quip: String) = startDeathSequence(quip)
+    override fun killPlayer(quip: String) = startDeathSequence(quip, null)
+    override fun killPlayer(quip: String, causeKey: String?) = startDeathSequence(quip, causeKey)
 
     override fun relocateExitGate(destX: Float, destY: Float) {
       currentExitX = destX
@@ -236,6 +345,10 @@ class ChaosGameEngine(
   var hudSnapshot: EngineHudSnapshot = buildCurrentHudSnapshot()
     private set
 
+  private fun currentOrderIndex(): Int {
+    return lockedChallengeConfig?.orderIndex ?: level.levelId
+  }
+
   private fun buildCurrentHudSnapshot(): EngineHudSnapshot {
     var collectedCoins = 0
     for (i in coins.indices) {
@@ -249,6 +362,7 @@ class ChaosGameEngine(
     for (i in relics.indices) {
       if (relics[i].isCollected) collectedRelics++
     }
+    val currentTier = lockedChallengeConfig?.selectedAdaptiveTier ?: AdaptiveTier.STANDARD
     return EngineHudSnapshot(
         coinsCollected = collectedCoins,
         health = player.health,
@@ -261,7 +375,14 @@ class ChaosGameEngine(
         relicsCollected = collectedRelics,
         activeNotification = notificationController.activeNotification,
         deathCount = deathCount,
-        isDying = isDying
+        isDying = isDying,
+        challengeEpoch = challengeEpoch,
+        challengeId = activeChallengeId,
+        challengeOrderIndex = currentOrderIndex(),
+        launchMode = launchMode,
+        cumulativeDeathCount = cumulativeDeathCount,
+        cumulativeRunTimerMs = cumulativeRunTimerMs,
+        activeAdaptiveTier = currentTier
     )
   }
 
@@ -280,6 +401,8 @@ class ChaosGameEngine(
     }
     val timerTenths = (levelTimerMs / 100L).toInt()
     val notif = notificationController.activeNotification
+    val orderIdx = currentOrderIndex()
+    val currentTier = lockedChallengeConfig?.selectedAdaptiveTier ?: AdaptiveTier.STANDARD
     val prev = hudSnapshot
     if (prev.coinsCollected == collectedCoins &&
         prev.health == player.health &&
@@ -292,7 +415,14 @@ class ChaosGameEngine(
         prev.relicsCollected == collectedRelics &&
         prev.activeNotification == notif &&
         prev.deathCount == deathCount &&
-        prev.isDying == isDying) {
+        prev.isDying == isDying &&
+        prev.challengeEpoch == challengeEpoch &&
+        prev.challengeId == activeChallengeId &&
+        prev.challengeOrderIndex == orderIdx &&
+        prev.launchMode == launchMode &&
+        prev.cumulativeDeathCount == cumulativeDeathCount &&
+        prev.cumulativeRunTimerMs == cumulativeRunTimerMs &&
+        prev.activeAdaptiveTier == currentTier) {
       return
     }
     hudSnapshot = EngineHudSnapshot(
@@ -307,7 +437,14 @@ class ChaosGameEngine(
         relicsCollected = collectedRelics,
         activeNotification = notif,
         deathCount = deathCount,
-        isDying = isDying
+        isDying = isDying,
+        challengeEpoch = challengeEpoch,
+        challengeId = activeChallengeId,
+        challengeOrderIndex = orderIdx,
+        launchMode = launchMode,
+        cumulativeDeathCount = cumulativeDeathCount,
+        cumulativeRunTimerMs = cumulativeRunTimerMs,
+        activeAdaptiveTier = currentTier
     )
   }
 
@@ -315,38 +452,127 @@ class ChaosGameEngine(
     block(this)
   }
 
+  /**
+   * Thread-safely loads a new challenge into this existing ChaosGameEngine instance,
+   * preserving the live GameSurfaceView / GameRenderThread across continuous transitions.
+   * Reentrant calls made from inside update() (e.g. via onLevelCompleted) are queued
+   * and applied atomically right before update() exits worldStateLock.
+   */
+  fun loadChallenge(
+      lockedConfig: LockedChallengeConfig,
+      attemptToken: Long = challengeAttemptToken + 1L,
+      launchMode: RunLaunchMode = this.launchMode,
+      discoveredRelics: Set<String> = this.discoveredRelics,
+      preserveCumulativeStats: Boolean = true,
+      initialDeathsInChallenge: Int = 0,
+      cumulativeTimerMs: Long? = null,
+      cumulativeDeaths: Int? = null
+  ) = synchronized(worldStateLock) {
+    val request = PendingChallengeLoad(
+        lockedConfig = lockedConfig,
+        attemptToken = attemptToken,
+        launchMode = launchMode,
+        discoveredRelics = discoveredRelics.toSet(),
+        preserveCumulativeStats = preserveCumulativeStats,
+        initialDeathsInChallenge = initialDeathsInChallenge.coerceAtLeast(0),
+        cumulativeTimerMs = cumulativeTimerMs,
+        cumulativeDeaths = cumulativeDeaths
+    )
+    if (isInsideUpdate) {
+      pendingChallengeLoad = request
+      return@synchronized
+    }
+    applyChallengeLoadLocked(request)
+    publishHudSnapshot()
+  }
+
+  private fun applyChallengeLoadLocked(request: PendingChallengeLoad) {
+    trapSystem.clearPendingChainEvents()
+    lockedChallengeConfig = request.lockedConfig
+    level = request.lockedConfig.levelDefinition
+    activeChallengeId = request.lockedConfig.challengeId
+    challengeAttemptToken = request.attemptToken
+    launchMode = request.launchMode
+    pendingDeathCauseKey = null
+    lastDeathCauseKey = null
+    challengeEpoch++
+
+    if (!request.preserveCumulativeStats) {
+      cumulativeRunTimerMs = request.cumulativeTimerMs?.coerceAtLeast(0L) ?: 0L
+      cumulativeDeathCount = request.cumulativeDeaths?.coerceAtLeast(0) ?: 0
+    } else {
+      request.cumulativeTimerMs?.let { cumulativeRunTimerMs = it.coerceAtLeast(0L) }
+      request.cumulativeDeaths?.let { cumulativeDeathCount = it.coerceAtLeast(0) }
+    }
+    deathCount = request.initialDeathsInChallenge
+
+    tiles = level.tiles.map { it.copy() }
+    coins = level.coins.map { it.copy() }
+    movingPlatforms = level.movingPlatforms.map { it.copy() }
+    bounceDrums = level.bounceDrums.map { it.copy() }
+    critters = level.critters.map { it.copy() }
+    windDrafts = level.windDrafts.map { it.copy() }
+    pendulums = level.pendulums.map { it.copy() }
+    diyas = level.diyas.map { it.copy() }
+    fallingHazards = level.fallingHazards.map { it.copy() }
+    ambushTraps = level.ambushTraps.map { it.copy() }
+    soundSwitches = level.soundSwitches.map { it.copy() }
+    orbitingPlatforms = level.orbitingPlatforms.map { it.copy() }
+    collapsingPillars = level.collapsingPillars.map { it.copy() }
+    waterCurrents = level.waterCurrents.map { it.copy() }
+    lightningHazards = level.lightningHazards.map { it.copy() }
+    relics = level.relics.map { it.copy() }
+    trollTraps = level.trollTraps.map { it.copy() }
+    resonanceStone = level.resonanceStone?.copy()
+    echoPuzzleNode = level.echoPuzzleNode?.copy()
+
+    guardianCfg = level.guardianConfig
+    stoneGuardian = buildStoneGuardianState(level)
+    currentExitX = level.exitX
+    currentExitY = level.exitY
+
+    discoveredRelics.clear()
+    discoveredRelics.addAll(request.discoveredRelics)
+
+    resetCurrentChallengeInternal(clearInputs = true, invulnFrames = 0)
+  }
+
   fun update() = synchronized(worldStateLock) {
-    if (isPaused || isGameOver || isVictorious) {
-      if (isVictorious) {
-        player.state = AaravState.VICTORY
+    isInsideUpdate = true
+    try {
+      if (isPaused || isGameOver || isVictorious) {
+        if (isVictorious) {
+          player.state = AaravState.VICTORY
+          player.stateTimerFrames++
+          updateParticles()
+          updateAtmosphereTimers()
+          publishHudSnapshot()
+        }
+        return
+      }
+
+      if (isDying) {
+        deathAnimFrames--
+        player.prevX = player.x
+        player.prevY = player.y
+        player.x += player.vx
+        player.y += player.vy
+        player.vy = (player.vy + 0.52f).coerceAtMost(12f)
+        player.state = AaravState.DEATH
         player.stateTimerFrames++
         updateParticles()
+        updatePopups()
         updateAtmosphereTimers()
+        if (deathAnimFrames <= 0) {
+          completeDeathRespawn()
+        }
         publishHudSnapshot()
+        return
       }
-      return
-    }
-
-    if (isDying) {
-      deathAnimFrames--
-      player.prevX = player.x
-      player.prevY = player.y
-      player.x += player.vx
-      player.y += player.vy
-      player.vy = (player.vy + 0.52f).coerceAtMost(12f)
-      player.state = AaravState.DEATH
-      player.stateTimerFrames++
-      updateParticles()
-      updatePopups()
-      updateAtmosphereTimers()
-      if (deathAnimFrames <= 0) {
-        completeDeathRespawn()
-      }
-      publishHudSnapshot()
-      return
-    }
 
     levelTimerMs += 16L
+    challengeTimerMs = levelTimerMs
+    cumulativeRunTimerMs += 16L
 
     // 1. Process Jump Buffer
     if (inputJump && !previousInputJump) {
@@ -477,22 +703,35 @@ class ChaosGameEngine(
       updateExitGate()
     }
 
-    // 10. Pit Death Detection
-    if (!isDying && player.y > level.pitKillY) {
-      handlePlayerDeath()
-    }
+      if (pendingChallengeLoad != null) {
+        return
+      }
 
-    // 11. Invulnerability timer
-    if (player.invulnerableFrames > 0) {
-      player.invulnerableFrames--
-    }
+      // 10. Pit Death Detection
+      if (!isDying && player.y > level.pitKillY) {
+        handlePlayerDeath(causeKey = "pit")
+      }
 
-    // 12. Update Particles, Popups & Atmospheric Timers
-    updateParticles()
-    updatePopups()
-    updateAtmosphereTimers()
-    player.stateTimerFrames++
-    publishHudSnapshot()
+      // 11. Invulnerability timer
+      if (player.invulnerableFrames > 0) {
+        player.invulnerableFrames--
+      }
+
+      // 12. Update Particles, Popups & Atmospheric Timers
+      updateParticles()
+      updatePopups()
+      updateAtmosphereTimers()
+      player.stateTimerFrames++
+      publishHudSnapshot()
+    } finally {
+      val pending = pendingChallengeLoad
+      if (pending != null) {
+        pendingChallengeLoad = null
+        applyChallengeLoadLocked(pending)
+        publishHudSnapshot()
+      }
+      isInsideUpdate = false
+    }
   }
 
   private fun updateAtmosphereTimers() {
@@ -1284,6 +1523,32 @@ class ChaosGameEngine(
           )
         }
         val collectedRelicsAtCp = relics.filter { it.isCollected }.map { it.id }.toSet()
+        val trapSnaps = trapSystem.captureSnapshots(trollTraps)
+        val orbitingSnaps = orbitingPlatforms.map {
+          OrbitingPlatformSnapshot(
+              platformId = it.id,
+              x = it.x,
+              y = it.y,
+              vx = it.vx,
+              vy = it.vy,
+              currentFrame = it.currentFrame
+          )
+        }
+        val pendulumSnaps = pendulums.map {
+          PendulumSnapshot(
+              pendulumId = it.id,
+              currentFrame = it.currentFrame,
+              bobX = it.bobX,
+              bobY = it.bobY
+          )
+        }
+        val lightningSnaps = lightningHazards.map {
+          LightningSnapshot(
+              hazardId = it.id,
+              currentFrame = it.currentFrame,
+              phase = it.phase
+          )
+        }
 
         checkpointSnapshot = LevelCheckpointSnapshot(
             playerX = checkpointTile.x + 8f,
@@ -1305,7 +1570,14 @@ class ChaosGameEngine(
             triggeredFallingHazardIds = fallingHazards.filter { it.hasTriggered }.map { it.id }.toSet(),
             switchSnapshots = switchSnaps,
             pillarSnapshots = pillarSnaps,
-            collectedRelicsAtCheckpoint = collectedRelicsAtCp
+            collectedRelicsAtCheckpoint = collectedRelicsAtCp,
+            challengeTimerMs = challengeTimerMs,
+            exitXAtCheckpoint = currentExitX,
+            exitYAtCheckpoint = currentExitY,
+            trollTrapSnapshots = trapSnaps,
+            orbitingPlatformSnapshots = orbitingSnaps,
+            pendulumSnapshots = pendulumSnaps,
+            lightningSnapshots = lightningSnaps
         )
 
         // E3: Checkpoint Bell Glyph (permanent story clue #3) — only on 1-1 Whispering Woods
@@ -2197,6 +2469,7 @@ class ChaosGameEngine(
       }
       if (!isVictorious) {
         isVictorious = true
+        completedChallengeIds.add(activeChallengeId)
         player.state = AaravState.VICTORY
         triggeredEvents.add(GameplayEventId.E7_SUN_GATE_AWAKENING)
         val victoryWhisper = if (level.isTrollLevel) {
@@ -2236,9 +2509,9 @@ class ChaosGameEngine(
     }
   }
 
-  private fun handlePlayerDamage() {
+  private fun handlePlayerDamage(causeKey: String? = null) {
     if (level.isTrollLevel) {
-      startDeathSequence("OUCH!")
+      startDeathSequence("OUCH!", causeKey)
       return
     }
     if (player.invulnerableFrames > 0) return
@@ -2250,7 +2523,7 @@ class ChaosGameEngine(
     triggerCameraShake(8, 4.5f)
 
     if (player.health <= 0) {
-      handlePlayerDeath()
+      handlePlayerDeath(causeKey)
     } else {
       player.state = AaravState.DAMAGE
       player.vy = -7.0f
@@ -2258,10 +2531,11 @@ class ChaosGameEngine(
     }
   }
 
-  fun startDeathSequence(quip: String = "NOPE!") = synchronized(worldStateLock) {
+  fun startDeathSequence(quip: String = "NOPE!", causeKey: String? = null) = synchronized(worldStateLock) {
     if (isDying || isVictorious || isGameOver) return@synchronized
     isDying = true
-    deathAnimFrames = DEATH_ANIM_FRAMES
+    deathAnimFrames = deathAnimDurationFrames.coerceAtLeast(1)
+    pendingDeathCauseKey = causeKey
     player.health = 0
     player.state = AaravState.DEATH
     player.stateTimerFrames = 0
@@ -2280,19 +2554,36 @@ class ChaosGameEngine(
   private fun completeDeathRespawn() {
     isDying = false
     deathAnimFrames = 0
-    handlePlayerDeathInternal(playDeathSound = false)
+    val cause = pendingDeathCauseKey
+    pendingDeathCauseKey = null
+    handlePlayerDeathInternal(playDeathSound = false, causeKey = cause)
   }
 
-  fun handlePlayerDeath() = synchronized(worldStateLock) {
+  fun handlePlayerDeath(causeKey: String? = null) = synchronized(worldStateLock) {
     if (isDying || isVictorious || isGameOver) return@synchronized
     isDying = false
     deathAnimFrames = 0
-    handlePlayerDeathInternal(playDeathSound = true)
+    pendingDeathCauseKey = null
+    handlePlayerDeathInternal(playDeathSound = true, causeKey = causeKey)
   }
 
-  private fun handlePlayerDeathInternal(playDeathSound: Boolean) {
+  private fun handlePlayerDeathInternal(playDeathSound: Boolean, causeKey: String? = null) {
+    lastDeathCauseKey = causeKey
     deathCount++
+    cumulativeDeathCount++
     onPlayerDied(deathCount)
+    onChallengeDeathAttributed(activeChallengeId, deathCount, cumulativeDeathCount, causeKey)
+    onChallengeDeathUpdated(activeChallengeId, deathCount, cumulativeDeathCount)
+
+    // Retry boundary adaptive config transition (occurs strictly AFTER attempt death completes, never mid-attempt)
+    if (launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION) {
+      val transition = onAttemptRetryConfigRequested?.invoke(activeChallengeId, deathCount, causeKey)
+      if (transition != null) {
+        lockedChallengeConfig = transition.lockedConfig
+        challengeAttemptToken = transition.attemptToken
+      }
+    }
+
     if (playDeathSound) {
       audioEngine.playDeath()
       triggerCameraShake(10, 5.5f)
@@ -2304,16 +2595,31 @@ class ChaosGameEngine(
       // Immediately clear active & queued notifications so pre-death messages never reappear after rollback
       notificationController.clearActiveAndQueue(clearShownKeys = false)
 
-      // Deterministic rollback to Checkpoint (never clears held controller inputs!)
+      // Deterministic rollback to Checkpoint (never clears held movement inputs,
+      // but arms jump edge-guard so holding Jump through death cannot auto-trigger a frame-1 jump)
       player.x = snap.playerX
       player.y = snap.playerY
+      player.prevX = snap.playerX
+      player.prevY = snap.playerY
       player.vx = 0f
       player.vy = 0f
       player.isGrounded = true
       player.facingRight = snap.playerFacingRight
       player.health = snap.playerHealth
-      player.invulnerableFrames = 40
+      player.invulnerableFrames = if (level.isTrollLevel) 0 else 40
+      player.coyoteTimer = 0
+      player.jumpBufferTimer = 0
+      player.hasJumpCutApplied = false
       player.state = AaravState.IDLE
+      player.stateTimerFrames = 0
+      landingSquashFrames = 0
+      isStandingOnSlippery = false
+      lightningFlashFrames = 0
+      cameraShakeFrames = 0
+      cameraShakeMagnitude = 0f
+      previousInputJump = inputJump
+      levelTimerMs = snap.challengeTimerMs
+      challengeTimerMs = snap.challengeTimerMs
       score = snap.scoreAtCheckpoint
       comboMultiplier = 1
       comboTimerFrames = 0
@@ -2330,7 +2636,7 @@ class ChaosGameEngine(
         }
       }
 
-      // Restore moving platforms
+      // Restore moving platforms, orbiting platforms, pendulums & lightning hazards
       val mpMap = snap.movingPlatformSnapshots.associateBy { it.platformId }
       for (mp in movingPlatforms) {
         mpMap[mp.id]?.let {
@@ -2338,6 +2644,38 @@ class ChaosGameEngine(
           mp.y = it.y
           mp.vx = it.vx
           mp.currentFrame = it.currentFrame
+        }
+      }
+      val opMap = snap.orbitingPlatformSnapshots.associateBy { it.platformId }
+      for (i in orbitingPlatforms.indices) {
+        val op = orbitingPlatforms[i]
+        val opSnap = opMap[op.id]
+        if (opSnap != null) {
+          op.x = opSnap.x
+          op.y = opSnap.y
+          op.vx = opSnap.vx
+          op.vy = opSnap.vy
+          op.currentFrame = opSnap.currentFrame
+        } else {
+          val orig = level.orbitingPlatforms[i]
+          op.x = orig.x
+          op.y = orig.y
+          op.vx = 0f
+          op.vy = 0f
+          op.currentFrame = 0
+        }
+      }
+      val pendMap = snap.pendulumSnapshots.associateBy { it.pendulumId }
+      for (pend in pendulums) {
+        val pendSnap = pendMap[pend.id]
+        if (pendSnap != null) {
+          pend.currentFrame = pendSnap.currentFrame
+          pend.bobX = pendSnap.bobX
+          pend.bobY = pendSnap.bobY
+        } else {
+          pend.currentFrame = 0
+          pend.bobX = pend.anchorX
+          pend.bobY = pend.anchorY + pend.length
         }
       }
 
@@ -2368,13 +2706,27 @@ class ChaosGameEngine(
           rollbackNotificationKeys.add("HAZARD_FALL_${hz.id}")
         }
       }
-      for (lh in lightningHazards) {
+      val lhMap = snap.lightningSnapshots.associateBy { it.hazardId }
+      for (i in lightningHazards.indices) {
+        val lh = lightningHazards[i]
+        val lhSnap = lhMap[lh.id]
+        if (lhSnap != null) {
+          lh.currentFrame = lhSnap.currentFrame
+          lh.phase = lhSnap.phase
+        } else {
+          val orig = level.lightningHazards[i]
+          lh.currentFrame = orig.phaseOffsetFrames
+          lh.phase = TrapPhase.ARMED
+        }
         rollbackNotificationKeys.add("HAZARD_LIGHTNING_${lh.id}")
       }
       for (trap in ambushTraps) {
         trap.phase = TrapPhase.ARMED
         trap.phaseTimerFrames = 0
         trap.currentHeight = 0f
+      }
+      for (drum in bounceDrums) {
+        drum.squashFrames = 0
       }
 
       // Restore coins & diyas: items collected post-checkpoint roll back
@@ -2390,15 +2742,20 @@ class ChaosGameEngine(
 
       // Restore sound switches, collapsing pillars & relics cleanly
       val swMap = snap.switchSnapshots.associateBy { it.switchId }
+      val switchGroups = mutableSetOf<Int>()
       for (sw in soundSwitches) {
         swMap[sw.id]?.let {
           sw.isActivated = it.isActivated
           sw.remainingFrames = it.remainingFrames
           sw.pulseAnimFrames = 0
         }
+        switchGroups.add(sw.groupId)
         if (!sw.isActivated) {
           rollbackNotificationKeys.add("ECHO_SW_${sw.id}")
         }
+      }
+      for (groupId in switchGroups) {
+        syncSoundGroupState(groupId)
       }
       val pilMap = snap.pillarSnapshots.associateBy { it.pillarId }
       for (pil in collapsingPillars) {
@@ -2412,6 +2769,12 @@ class ChaosGameEngine(
         relic.isCollected = snap.collectedRelicsAtCheckpoint.contains(relic.id)
       }
 
+      // Clear transient particles & popups from death sequence
+      for (p in particles) p.active = false
+      nextParticleIndex = 0
+      for (p in popups) p.active = false
+      nextPopupIndex = 0
+
       // Restore temporary puzzle states deterministically
       echoPuzzleNode?.isActivated = snap.echoSealActivatedAtCheckpoint
       if (!snap.echoSealActivatedAtCheckpoint) {
@@ -2423,23 +2786,44 @@ class ChaosGameEngine(
       watcherAppearance.isActive = false
       watcherAppearance.remainingFrames = 0
 
-      // Restore Set Pieces & Troll Traps deterministically
-      resetAllTrollTraps()
+      // Restore Set Pieces, Exit Gate & Troll Traps deterministically (pre-checkpoint traps stay solved)
+      if (snap.trollTrapSnapshots.isNotEmpty()) {
+        trapSystem.restoreSnapshots(trollTraps, snap.trollTrapSnapshots)
+      } else {
+        trapSystem.resetAll(trollTraps)
+      }
+      lockedChallengeConfig?.let {
+        TrapFairnessPolicy.applyTierTuningInPlace(trollTraps, it.selectedAdaptiveTier)
+      }
+      val restoredExitX = snap.exitXAtCheckpoint ?: level.exitX
+      val restoredExitY = snap.exitYAtCheckpoint ?: level.exitY
+      currentExitX = restoredExitX
+      currentExitY = restoredExitY
+      for (tile in tiles) {
+        if (tile.type == TileType.SUN_GATE) {
+          tile.x = restoredExitX
+          tile.y = restoredExitY
+        }
+      }
       resetSetPiecesForRollback(
           treeResolved = snap.treeResolvedAtCheckpoint,
           stalkerRepelled = snap.stalkerRepelledAtCheckpoint,
           guardianDefeated = snap.guardianDefeatedAtCheckpoint
       )
-      // Note: Permanent story clues (discoveredClues), discoveredRelics, and isResonanceStoneDiscovered NEVER roll back on death.
+      pendingCameraSnap.set(true)
+      // Note: Permanent clues (discoveredClues), discoveredRelics, completedChallengeIds, cumulative counters, and isResonanceStoneDiscovered NEVER roll back.
     } else {
-      // Reset to level start (never clears held controller inputs!)
-      resetLevelInternal(clearInputs = false, invulnFrames = if (level.isTrollLevel) 0 else 40)
+      // Reset to challenge start (never clears held movement inputs!)
+      resetCurrentChallengeInternal(clearInputs = false, invulnFrames = if (level.isTrollLevel) 0 else 40)
     }
     publishHudSnapshot()
   }
 
   private fun resetAllTrollTraps() {
     trapSystem.resetAll(trollTraps)
+    lockedChallengeConfig?.let {
+      TrapFairnessPolicy.applyTierTuningInPlace(trollTraps, it.selectedAdaptiveTier)
+    }
     currentExitX = level.exitX
     currentExitY = level.exitY
     for (tile in tiles) {
@@ -2455,15 +2839,22 @@ class ChaosGameEngine(
   }
 
   /**
-   * Full deterministic level restart (from Victory, Pause, or explicit restart).
-   * Preserves permanent story clues and Resonance Stone discovery while resetting all run state.
+   * Deterministic challenge retry/restart entry point.
+   * Resets all current-challenge mutable state while preserving permanent discoveries,
+   * previously completed challenges, and cumulative run counters.
    */
-  fun resetLevel() = synchronized(worldStateLock) {
-    resetLevelInternal(clearInputs = true, invulnFrames = 0)
+  fun resetCurrentChallenge(clearInputs: Boolean = true) = synchronized(worldStateLock) {
+    resetCurrentChallengeInternal(clearInputs = clearInputs, invulnFrames = 0)
     publishHudSnapshot()
   }
 
-  private fun resetLevelInternal(clearInputs: Boolean, invulnFrames: Int) {
+  /**
+   * Full deterministic level restart (from Victory, Pause, or explicit restart).
+   * Preserves permanent story clues and Resonance Stone discovery while resetting all run state.
+   */
+  fun resetLevel() = resetCurrentChallenge(clearInputs = true)
+
+  private fun resetCurrentChallengeInternal(clearInputs: Boolean, invulnFrames: Int) {
     player.x = level.spawnX
     player.y = level.spawnY
     player.prevX = level.spawnX
@@ -2484,26 +2875,37 @@ class ChaosGameEngine(
     isStandingOnSlippery = false
     lightningFlashFrames = 0
 
+    // Always reset attempt timer, camera shake, and request immediate camera snap
+    levelTimerMs = 0L
+    challengeTimerMs = 0L
+    cameraShakeFrames = 0
+    cameraShakeMagnitude = 0f
+    pendingCameraSnap.set(true)
+
     if (clearInputs) {
       inputLeft = false
       inputRight = false
       inputJump = false
       previousInputJump = false
-      levelTimerMs = 0L
       checkpointSnapshot = null
       hasCheckpointActivated = false
       isPaused = false
       isGameOver = false
       isVictorious = false
-      cameraShakeFrames = 0
-      cameraShakeMagnitude = 0f
+    } else {
+      // Guard against accidental frame-1 jump if Jump was held through death animation
+      previousInputJump = inputJump
     }
 
     score = 0
     comboMultiplier = 1
     comboTimerFrames = 0
 
-    for (tile in tiles) {
+    for (i in tiles.indices) {
+      val orig = level.tiles[i]
+      val tile = tiles[i]
+      tile.x = orig.x
+      tile.y = orig.y
       tile.isVisible = true
       tile.isSolid = (tile.type != TileType.CHECKPOINT_BELL &&
           tile.type != TileType.SUN_GATE &&
@@ -2586,18 +2988,23 @@ class ChaosGameEngine(
     }
     for (coin in coins) {
       coin.isCollected = false
+      coin.animTimer = 0f
     }
     for (diya in diyas) {
       diya.isLit = false
     }
     for (relic in relics) {
       relic.isCollected = false
+      relic.animTimer = 0f
     }
     for (p in particles) p.active = false
+    nextParticleIndex = 0
     for (p in popups) p.active = false
+    nextPopupIndex = 0
 
     echoPuzzleNode?.isActivated = false
     resonanceStone?.isCollected = false
+    resonanceStone?.animTimer = 0f
     triggeredEvents.clear()
     notificationController.clearActiveAndQueue(clearShownKeys = true)
     echoingBridgeCueCount = 0
@@ -2608,7 +3015,7 @@ class ChaosGameEngine(
         stalkerRepelled = false,
         guardianDefeated = false
     )
-    // Permanent story clues (discoveredClues), discoveredRelics, and isResonanceStoneDiscovered remain preserved.
+    // Permanent story clues (discoveredClues), discoveredRelics, completedChallengeIds, cumulative counters, and isResonanceStoneDiscovered remain preserved.
   }
 
   private fun resetSetPiecesForRollback(
