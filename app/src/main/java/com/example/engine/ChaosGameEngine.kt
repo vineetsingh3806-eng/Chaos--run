@@ -11,6 +11,13 @@ data class AttemptRetryTransition(
     val attemptToken: Long
 )
 
+enum class HapticCue {
+  JUMP,
+  TRAP_IMPACT,
+  DEATH,
+  VICTORY
+}
+
 data class EngineHudSnapshot(
     val coinsCollected: Int,
     val health: Int,
@@ -30,7 +37,8 @@ data class EngineHudSnapshot(
     val launchMode: RunLaunchMode = RunLaunchMode.SINGLE_STAGE,
     val cumulativeDeathCount: Int = 0,
     val cumulativeRunTimerMs: Long = 0L,
-    val activeAdaptiveTier: AdaptiveTier = AdaptiveTier.STANDARD
+    val activeAdaptiveTier: AdaptiveTier = AdaptiveTier.STANDARD,
+    val mirrorCurseFrames: Int = 0
 )
 
 /**
@@ -61,6 +69,7 @@ class ChaosGameEngine(
     val onChallengeDeathUpdated: (challengeId: String, challengeDeaths: Int, cumulativeDeaths: Int) -> Unit = { _, _, _ -> },
     val onChallengeDeathAttributed: (challengeId: String, challengeDeaths: Int, cumulativeDeaths: Int, causeKey: String?) -> Unit = { _, _, _, _ -> },
     val onAttemptRetryConfigRequested: ((challengeId: String, challengeDeaths: Int, causeKey: String?) -> AttemptRetryTransition?)? = null,
+    val onHapticCue: (HapticCue) -> Unit = {},
     val onLevelCompleted: (timeMs: Long, coinsCollected: Int, totalCoins: Int) -> Unit = { _, _, _ -> }
 ) {
   companion object {
@@ -155,6 +164,8 @@ class ChaosGameEngine(
     private set
   var currentExitY: Float = this.level.exitY
     private set
+  var mirrorCurseFrames: Int = 0
+    internal set
 
   // Set pieces (Awakening Tree, Vanar Forest Stalker, Vanishing Causeway + Stone Guardian)
   val awakeningTree = AwakeningTreeState()
@@ -323,6 +334,16 @@ class ChaosGameEngine(
       }
     }
 
+    override fun applyMirrorCurse(durationFrames: Int) {
+      if (durationFrames > mirrorCurseFrames) {
+        mirrorCurseFrames = durationFrames
+      }
+    }
+
+    override fun applyWindForce(forceX: Float) {
+      player.vx = (player.vx + forceX).coerceIn(-MAX_RUN_SPEED * 1.15f, MAX_RUN_SPEED * 1.15f)
+    }
+
     override fun playTrapSnap() = audioEngine.playTrapSnap()
     override fun playCrumble() = audioEngine.playCrumble()
     override fun playDisappear() = audioEngine.playDisappear()
@@ -330,6 +351,7 @@ class ChaosGameEngine(
     override fun playDoorEscape() = audioEngine.playDoorEscape()
     override fun playFakeDoorPoof() = audioEngine.playFakeDoorPoof()
     override fun playMechanismShift() = audioEngine.playMechanismShift()
+    override fun playTrapWarning() = audioEngine.playTrapWarning()
     override fun spawnDustTrickle(x: Float, y: Float) = this@ChaosGameEngine.spawnDustTrickle(x, y)
     override fun spawnDustPuff(x: Float, y: Float) = this@ChaosGameEngine.spawnDustPuff(x, y)
     override fun spawnSparkles(x: Float, y: Float, color: Int, count: Int) =
@@ -382,7 +404,8 @@ class ChaosGameEngine(
         launchMode = launchMode,
         cumulativeDeathCount = cumulativeDeathCount,
         cumulativeRunTimerMs = cumulativeRunTimerMs,
-        activeAdaptiveTier = currentTier
+        activeAdaptiveTier = currentTier,
+        mirrorCurseFrames = mirrorCurseFrames
     )
   }
 
@@ -422,7 +445,8 @@ class ChaosGameEngine(
         prev.launchMode == launchMode &&
         prev.cumulativeDeathCount == cumulativeDeathCount &&
         prev.cumulativeRunTimerMs == cumulativeRunTimerMs &&
-        prev.activeAdaptiveTier == currentTier) {
+        prev.activeAdaptiveTier == currentTier &&
+        prev.mirrorCurseFrames == mirrorCurseFrames) {
       return
     }
     hudSnapshot = EngineHudSnapshot(
@@ -444,7 +468,8 @@ class ChaosGameEngine(
         launchMode = launchMode,
         cumulativeDeathCount = cumulativeDeathCount,
         cumulativeRunTimerMs = cumulativeRunTimerMs,
-        activeAdaptiveTier = currentTier
+        activeAdaptiveTier = currentTier,
+        mirrorCurseFrames = mirrorCurseFrames
     )
   }
 
@@ -534,6 +559,7 @@ class ChaosGameEngine(
     discoveredRelics.clear()
     discoveredRelics.addAll(request.discoveredRelics)
 
+    audioEngine.onTransitionOrRetry(suppressAmbientMs = 150L, playRetryCue = false)
     resetCurrentChallengeInternal(clearInputs = true, invulnFrames = 0)
   }
 
@@ -590,15 +616,20 @@ class ChaosGameEngine(
     }
     previousInputJump = inputJump
 
-    // 3. Horizontal Kinematics (snappy turnarounds, responsive air control, slippery stone momentum)
+    // 3. Horizontal Kinematics (snappy turnarounds, responsive air control, slippery stone, Mirror Curse)
+    val effectiveLeft = if (mirrorCurseFrames > 0) inputRight else inputLeft
+    val effectiveRight = if (mirrorCurseFrames > 0) inputLeft else inputRight
+    if (mirrorCurseFrames > 0) {
+      mirrorCurseFrames--
+    }
     val baseAccelRaw = if (player.isGrounded) RUN_ACCEL else AIR_ACCEL
     val baseAccel = if (player.isGrounded && isStandingOnSlippery) baseAccelRaw * 0.52f else baseAccelRaw
     val friction = if (player.isGrounded && isStandingOnSlippery) GROUND_FRICTION * 0.18f else GROUND_FRICTION
-    if (inputLeft && !inputRight) {
+    if (effectiveLeft && !effectiveRight) {
       val accel = if (player.vx > 0f && player.isGrounded && !isStandingOnSlippery) baseAccel * TURN_ACCEL_MULTIPLIER else baseAccel
       player.vx = (player.vx - accel).coerceAtLeast(-MAX_RUN_SPEED)
       player.facingRight = false
-    } else if (inputRight && !inputLeft) {
+    } else if (effectiveRight && !effectiveLeft) {
       val accel = if (player.vx < 0f && player.isGrounded && !isStandingOnSlippery) baseAccel * TURN_ACCEL_MULTIPLIER else baseAccel
       player.vx = (player.vx + accel).coerceAtMost(MAX_RUN_SPEED)
       player.facingRight = true
@@ -629,6 +660,7 @@ class ChaosGameEngine(
       landingSquashFrames = 0
       player.state = AaravState.JUMP_UP
       audioEngine.playJump()
+      onHapticCue(HapticCue.JUMP)
       spawnDustPuff(player.x + player.collisionWidth / 2, player.y + player.collisionHeight)
     }
 
@@ -661,6 +693,7 @@ class ChaosGameEngine(
     }
     updateOrbitingPlatforms()
     updatePendulums()
+    trapSystem.preStepMovingTraps(trollTraps)
 
     // 7. Integrate Physics & Collision
     val wasGroundedBeforeMove = player.isGrounded
@@ -1122,9 +1155,10 @@ class ChaosGameEngine(
 
       if (distSq < pickupDist * pickupDist) {
         coin.isCollected = true
-        audioEngine.playCoin()
         addComboScore(100, coin.x, coin.y - 12f, null, 0xFFFDE047.toInt())
+        audioEngine.playCoin(comboMultiplier)
         spawnSparkles(coin.x, coin.y, 0xFFFFD700.toInt(), 10)
+        trapSystem.onCoinCollected(coin.id, trollTraps, trapCallbacks)
       }
     }
   }
@@ -2467,6 +2501,20 @@ class ChaosGameEngine(
         )
         return
       }
+      val fleeingBlocking = trollTraps.any {
+        it.type == TrollTrapType.FLEEING_SUN_GATE &&
+            it.state != TrollTrapState.RETIRED &&
+            it.activationCount < it.maxActivations
+      }
+      val cageBlocking = trollTraps.any {
+        it.type == TrollTrapType.EXIT_SLAM_CAGE &&
+            it.state == TrollTrapState.ACTIVE &&
+            playerRight > it.x && playerLeft < it.x + it.width &&
+            playerBottom > it.y && playerTop < it.y + it.height
+      }
+      if (fleeingBlocking || cageBlocking) {
+        return
+      }
       if (!isVictorious) {
         isVictorious = true
         completedChallengeIds.add(activeChallengeId)
@@ -2479,6 +2527,13 @@ class ChaosGameEngine(
             3 -> "Even a lying exit couldn't outrun Aarav!"
             4 -> "Cracks, blinks, and ceilings conquered — the floor bows to you."
             5 -> "Outsmarted every troll in World 1 — you survived Almost There!"
+            6 -> "Split bridges and phantom ledges couldn't drop you!"
+            7 -> "Balanced every tilt and outran the trailing spike!"
+            8 -> "Even runaway platforms bowed to your timing!"
+            9 -> "Cages opened, fleeing gates caught — true finish claimed!"
+            10 -> "Threaded the pincers and outpaced the stalker wall!"
+            11 -> "Every switch and coin trap saw right through you — and lost!"
+            12 -> "Mastered shifting winds and mirrored controls!"
             else -> "The Sun Gate awakens — trial cleared!"
           }
         } else {
@@ -2502,7 +2557,15 @@ class ChaosGameEngine(
             0xFFFDE047.toInt(),
             20
         )
-        audioEngine.playVictory()
+        val isIntermediateContinuous =
+            launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION &&
+                currentOrderIndex() < ChallengeCatalog.entries.size
+        if (isIntermediateContinuous) {
+          audioEngine.playChallengeComplete()
+        } else {
+          audioEngine.playVictory()
+        }
+        onHapticCue(HapticCue.VICTORY)
         val collectedCount = coins.count { it.isCollected }
         onLevelCompleted(levelTimerMs, collectedCount, coins.size)
       }
@@ -2520,6 +2583,7 @@ class ChaosGameEngine(
     comboMultiplier = 1
     comboTimerFrames = 0
     audioEngine.playDamage()
+    onHapticCue(HapticCue.TRAP_IMPACT)
     triggerCameraShake(8, 4.5f)
 
     if (player.health <= 0) {
@@ -2545,6 +2609,7 @@ class ChaosGameEngine(
     comboMultiplier = 1
     comboTimerFrames = 0
     audioEngine.playFastTrollDeath()
+    onHapticCue(HapticCue.DEATH)
     triggerCameraShake(8, 5.0f)
     spawnDeathStarburst(player.x + player.collisionWidth / 2f, player.y + player.collisionHeight / 2f)
     spawnPopup(player.x + player.collisionWidth / 2f, player.y - 14f, quip, 0xFFFB7185.toInt())
@@ -2586,9 +2651,11 @@ class ChaosGameEngine(
 
     if (playDeathSound) {
       audioEngine.playDeath()
+      onHapticCue(HapticCue.DEATH)
       triggerCameraShake(10, 5.5f)
       spawnDeathStarburst(player.x + player.collisionWidth / 2, player.y + player.collisionHeight / 2)
     }
+    audioEngine.onTransitionOrRetry(suppressAmbientMs = 120L, playRetryCue = false)
 
     val snap = checkpointSnapshot
     if (snap != null) {
@@ -2614,6 +2681,7 @@ class ChaosGameEngine(
       player.stateTimerFrames = 0
       landingSquashFrames = 0
       isStandingOnSlippery = false
+      mirrorCurseFrames = 0
       lightningFlashFrames = 0
       cameraShakeFrames = 0
       cameraShakeMagnitude = 0f
@@ -2792,6 +2860,7 @@ class ChaosGameEngine(
       } else {
         trapSystem.resetAll(trollTraps)
       }
+      trapSystem.syncTriggeredCoinsWithSet(snap.coinsCollectedAtCheckpoint)
       lockedChallengeConfig?.let {
         TrapFairnessPolicy.applyTierTuningInPlace(trollTraps, it.selectedAdaptiveTier)
       }
@@ -2844,6 +2913,7 @@ class ChaosGameEngine(
    * previously completed challenges, and cumulative run counters.
    */
   fun resetCurrentChallenge(clearInputs: Boolean = true) = synchronized(worldStateLock) {
+    audioEngine.onTransitionOrRetry(suppressAmbientMs = 150L, playRetryCue = clearInputs)
     resetCurrentChallengeInternal(clearInputs = clearInputs, invulnFrames = 0)
     publishHudSnapshot()
   }
@@ -2873,6 +2943,7 @@ class ChaosGameEngine(
     player.stateTimerFrames = 0
     landingSquashFrames = 0
     isStandingOnSlippery = false
+    mirrorCurseFrames = 0
     lightningFlashFrames = 0
 
     // Always reset attempt timer, camera shake, and request immediate camera snap

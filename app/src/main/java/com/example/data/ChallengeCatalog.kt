@@ -1,8 +1,9 @@
 package com.example.data
 
 /**
- * Initial curated challenge catalog (ch_01–ch_05) mapping cleanly onto the existing
- * five playable World 1 levels while preserving World1Levels and all level layouts.
+ * Curated challenge catalog (ch_01–ch_12): preserves ch_01–ch_05 mapped onto World 1
+ * levels and adds 7 handcrafted Phase 4 challenges (ch_06–ch_12) showcasing all
+ * 13 new trap mechanics and 2 event-driven trigger behaviours.
  */
 object ChallengeCatalog {
   const val CONFIG_VERSION = 1
@@ -72,6 +73,83 @@ object ChallengeCatalog {
           legacyLevelId = 5,
           baseDifficulty = DifficultyTier.NORMAL,
           levelFactory = { difficulty -> World1Levels.createLevel(5, difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_06",
+          orderIndex = 6,
+          title = "The Cracking Road",
+          subtitle = "Split Bridges & Phantom Ledges",
+          theme = LevelTheme.WHISPERING_WOODS,
+          challengeSeed = 1006L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge06CrackingRoad.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_07",
+          orderIndex = 7,
+          title = "Tilted Trouble",
+          subtitle = "Seesaw Planks & Trailing Spikes",
+          theme = LevelTheme.HOLLOW_OF_ECHOES,
+          challengeSeed = 1007L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge07TiltedTrouble.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_08",
+          orderIndex = 8,
+          title = "The Runaway Floor",
+          subtitle = "Evasive Platforms & Yo-Yo Lifts",
+          theme = LevelTheme.MONSOON_RUN,
+          challengeSeed = 1008L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge08RunawayFloor.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_09",
+          orderIndex = 9,
+          title = "The Fake Finish",
+          subtitle = "Slam Cages & Fleeing Gates",
+          theme = LevelTheme.RUINS_OF_LOST_KING,
+          challengeSeed = 1009L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge09FakeFinish.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_10",
+          orderIndex = 10,
+          title = "Walls Are Watching",
+          subtitle = "Pincer Jaws & Stalker Walls",
+          theme = LevelTheme.TEMPLE_OF_LAST_LIGHT,
+          challengeSeed = 1010L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge10WallsAreWatching.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_11",
+          orderIndex = 11,
+          title = "Trust Nothing",
+          subtitle = "Betrayal Switches & Coin Traps",
+          theme = LevelTheme.RUINS_OF_LOST_KING,
+          challengeSeed = 1011L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge11TrustNothing.build(difficulty) }
+      ),
+      ChallengeDefinition(
+          challengeId = "ch_12",
+          orderIndex = 12,
+          title = "Mirror Mayhem",
+          subtitle = "Shifting Gusts & Mirror Totems",
+          theme = LevelTheme.TEMPLE_OF_LAST_LIGHT,
+          challengeSeed = 1012L,
+          configVersion = CONFIG_VERSION,
+          baseDifficulty = DifficultyTier.NORMAL,
+          levelFactory = { difficulty -> Challenge12MirrorMayhem.build(difficulty) }
       )
   )
 

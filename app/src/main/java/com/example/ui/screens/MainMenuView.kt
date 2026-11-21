@@ -50,6 +50,7 @@ fun MainMenuView(
   val isResonanceFound by viewModel.isResonanceDiscovered.collectAsState()
   val levelsProgress by viewModel.levelsProgress.collectAsState()
   val continuousState by viewModel.continuousPersistedState.collectAsState()
+  val isOnboardingCompleted by viewModel.isOnboardingCompleted.collectAsState()
   val unlockedCount = levelsProgress.count { it.isUnlocked }
   val highestUnlocked = levelsProgress.lastOrNull { it.isUnlocked }?.levelId ?: 1
   val highestMeta = levelsProgress.firstOrNull { it.levelId == highestUnlocked }
@@ -351,55 +352,73 @@ fun MainMenuView(
         }
       }
 
-      // Right Panel: Continuous Run Entry & Status (does not displace left panel in landscape)
+      // Right Panel: First-Time Quick Onboarding (first launch only) + Continuous Run Entry
       Column(
           modifier = Modifier
               .align(Alignment.BottomEnd)
-              .widthIn(max = 290.dp)
-              .clip(RoundedCornerShape(14.dp))
-              .background(Color(0xDD0E1D24))
-              .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(14.dp))
-              .padding(10.dp),
-          verticalArrangement = Arrangement.spacedBy(6.dp)
+              .widthIn(max = 290.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
-        val activeChallengeDef = ChallengeCatalog.findById(continuousState.activeChallengeId)
-        val continuousTitle = when {
-          continuousState.isRunActive && !continuousState.isRunCompleted && activeChallengeDef != null ->
-            "CONTINUE RUN • CH ${activeChallengeDef.orderIndex}/${ChallengeCatalog.entries.size}"
-          else -> "START CONTINUOUS RUN"
-        }
-        val continuousSubtitle = when {
-          continuousState.isRunActive && !continuousState.isRunCompleted ->
-            "${continuousState.completedChallengeIds.size}/5 cleared • ${continuousState.cumulativeDeaths} deaths"
-          continuousState.isRunCompleted ->
-            "Last run 5/5 cleared • Best ${continuousState.bestRunScore}pts"
-          else -> "Ch 1–5 continuous progression"
-        }
-
-        AdventureButton(
-            text = continuousTitle,
-            subtitle = continuousSubtitle,
-            accentColor = Color(0xFFF59E0B),
-            icon = Icons.Default.FastForward,
-            onClick = { viewModel.startOrContinueContinuousRun() },
-            testTag = "button_continuous_run"
-        )
-
-        if (continuousState.isRunCompleted) {
-          OutlinedButton(
-              onClick = { viewModel.openRunCompletionScreen() },
-              shape = RoundedCornerShape(10.dp),
+        if (!isOnboardingCompleted) {
+          FirstLaunchOnboardingCard(
+              onOpenFullGuide = { viewModel.openOnboardingModal() },
+              onSkip = { viewModel.completeOnboarding(syncCommit = false) },
+              onComplete = { viewModel.completeOnboarding(syncCommit = false) },
               modifier = Modifier
                   .fillMaxWidth()
-                  .heightIn(min = 48.dp)
-                  .testTag("button_view_run_summary")
-          ) {
-            Text(
-                text = "RUN COMPLETION SUMMARY",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                color = Color(0xFF67E8F9)
-            )
+                  .heightIn(max = 205.dp)
+          )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xDD0E1D24))
+                .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(14.dp))
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          val activeChallengeDef = ChallengeCatalog.findById(continuousState.activeChallengeId)
+          val continuousTitle = when {
+            continuousState.isRunActive && !continuousState.isRunCompleted && activeChallengeDef != null ->
+              "CONTINUE RUN • CH ${activeChallengeDef.orderIndex}/${ChallengeCatalog.entries.size}"
+            else -> "START CONTINUOUS RUN"
+          }
+          val totalChallenges = ChallengeCatalog.entries.size
+          val continuousSubtitle = when {
+            continuousState.isRunActive && !continuousState.isRunCompleted ->
+              "${continuousState.completedChallengeIds.size}/$totalChallenges cleared • ${continuousState.cumulativeDeaths} deaths"
+            continuousState.isRunCompleted ->
+              "Last run $totalChallenges/$totalChallenges cleared • Best ${continuousState.bestRunScore}pts"
+            else -> "Ch 1–$totalChallenges continuous progression"
+          }
+
+          AdventureButton(
+              text = continuousTitle,
+              subtitle = continuousSubtitle,
+              accentColor = Color(0xFFF59E0B),
+              icon = Icons.Default.FastForward,
+              onClick = { viewModel.startOrContinueContinuousRun() },
+              testTag = "button_continuous_run"
+          )
+
+          if (continuousState.isRunCompleted) {
+            OutlinedButton(
+                onClick = { viewModel.openRunCompletionScreen() },
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("button_view_run_summary")
+            ) {
+              Text(
+                  text = "RUN COMPLETION SUMMARY",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Black,
+                  color = Color(0xFF67E8F9)
+              )
+            }
           }
         }
       }

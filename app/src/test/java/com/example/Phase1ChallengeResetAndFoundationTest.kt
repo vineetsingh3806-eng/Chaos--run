@@ -38,11 +38,11 @@ class Phase1ChallengeResetAndFoundationTest {
 
   @Test
   fun test01_challengeCatalogMappingAndLockedConfigParity() {
-    assertEquals(5, ChallengeCatalog.entries.size)
-    val expectedIds = listOf("ch_01", "ch_02", "ch_03", "ch_04", "ch_05")
+    assertEquals(12, ChallengeCatalog.entries.size)
+    val expectedIds = (1..12).map { "ch_${it.toString().padStart(2, '0')}" }
     assertEquals(expectedIds, ChallengeCatalog.entries.map { it.challengeId })
-    assertEquals(listOf(1, 2, 3, 4, 5), ChallengeCatalog.entries.map { it.orderIndex })
-    assertEquals(5, ChallengeCatalog.entries.map { it.challengeSeed }.toSet().size)
+    assertEquals((1..12).toList(), ChallengeCatalog.entries.map { it.orderIndex })
+    assertEquals(12, ChallengeCatalog.entries.map { it.challengeSeed }.toSet().size)
 
     for (levelId in 1..5) {
       val challengeId = "ch_0$levelId"

@@ -11,6 +11,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -20,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,6 +43,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -49,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.data.AdaptiveTier
 import com.example.data.ChallengeCatalog
 import com.example.data.GameplayNotification
 import com.example.data.LevelTheme
@@ -118,8 +123,11 @@ fun GameplayView(
               snap.isDying != hudSnapshot.isDying ||
               snap.challengeEpoch != hudSnapshot.challengeEpoch ||
               snap.challengeId != hudSnapshot.challengeId ||
+              snap.challengeOrderIndex != hudSnapshot.challengeOrderIndex ||
               snap.launchMode != hudSnapshot.launchMode ||
               snap.cumulativeDeathCount != hudSnapshot.cumulativeDeathCount ||
+              snap.activeAdaptiveTier != hudSnapshot.activeAdaptiveTier ||
+              (snap.mirrorCurseFrames > 0) != (hudSnapshot.mirrorCurseFrames > 0) ||
               snap.activeNotification != hudSnapshot.activeNotification
       if (hudChanged) {
         hudSnapshot = snap
@@ -179,90 +187,141 @@ fun GameplayView(
       )
     }
 
-    // 2. Illustrated Adventure HUD (Top Bar with safe insets)
+    // 2. Polished Illustrated Adventure HUD (Responsive Top Bar with safe insets)
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .safeDrawingPadding()
-            .padding(top = 8.dp, start = 16.dp, end = 16.dp)
+            .padding(top = 8.dp, start = 14.dp, end = 14.dp)
             .onGloballyPositioned { hudBounds = it.boundsInRoot() }
             .testTag("hud_top_bar"),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-      // Health Hearts Container (Adventure levels) or Troll Deaths Counter (1-hit troll levels)
-      if (engine.level.isTrollLevel) {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC101E24))
-                .border(2.dp, Color(0xFFEF4444), RoundedCornerShape(12.dp))
-                .padding(horizontal = 12.dp, vertical = 7.dp)
-                .testTag("hud_deaths_pill"),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-          Icon(
-              imageVector = Icons.Default.Refresh,
-              contentDescription = "Troll Deaths",
-              tint = Color(0xFFFCA5A5),
-              modifier = Modifier.size(17.dp)
-          )
-          Spacer(modifier = Modifier.width(5.dp))
-          Text(
-              text = "Deaths: ${hudSnapshot.deathCount}",
-              fontSize = 13.sp,
-              fontWeight = FontWeight.Black,
-              color = Color(0xFFFEE2E2)
-          )
-        }
-      } else {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC101E24))
-                .border(2.dp, Color(0xFFF59E0B), RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-          repeat(engine.player.maxHealth) { index ->
+      // Left Zone: Player Vitals / Troll Deaths + Mirror Curse Active State
+      Row(
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically
+      ) {
+        if (engine.level.isTrollLevel) {
+          Row(
+              modifier = Modifier
+                  .shadow(4.dp, RoundedCornerShape(12.dp))
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0xD8101E24))
+                  .border(1.8.dp, Color(0xFFEF4444), RoundedCornerShape(12.dp))
+                  .padding(horizontal = 10.dp, vertical = 6.dp)
+                  .testTag("hud_deaths_pill"),
+              verticalAlignment = Alignment.CenterVertically
+          ) {
             Icon(
-                imageVector = Icons.Default.Favorite,
-                contentDescription = "Heart",
-                tint = if (index < hudSnapshot.health) Color(0xFFEF4444) else Color(0x6694A3B8),
-                modifier = Modifier
-                    .size(18.dp)
-                    .padding(end = 2.dp)
+                imageVector = Icons.Default.Refresh,
+                contentDescription = "Troll Deaths",
+                tint = Color(0xFFFCA5A5),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = "Deaths: ${hudSnapshot.deathCount}",
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFFFEE2E2),
+                maxLines = 1
+            )
+          }
+        } else {
+          val isLowHealth = hudSnapshot.health <= 1
+          Row(
+              modifier = Modifier
+                  .shadow(4.dp, RoundedCornerShape(12.dp))
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0xD8101E24))
+                  .border(
+                      width = 1.8.dp,
+                      color = if (isLowHealth) Color(0xFFEF4444) else Color(0xFFF59E0B),
+                      shape = RoundedCornerShape(12.dp)
+                  )
+                  .padding(horizontal = 9.dp, vertical = 6.dp)
+                  .testTag("hud_health_pill"),
+              verticalAlignment = Alignment.CenterVertically
+          ) {
+            repeat(engine.player.maxHealth) { index ->
+              Icon(
+                  imageVector = Icons.Default.Favorite,
+                  contentDescription = "Heart",
+                  tint = if (index < hudSnapshot.health) Color(0xFFEF4444) else Color(0x5594A3B8),
+                  modifier = Modifier
+                      .size(17.dp)
+                      .padding(end = 2.dp)
+              )
+            }
+          }
+        }
+
+        if (hudSnapshot.mirrorCurseFrames > 0) {
+          Row(
+              modifier = Modifier
+                  .shadow(4.dp, RoundedCornerShape(12.dp))
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0xE0241436))
+                  .border(1.8.dp, Color(0xFFC084FC), RoundedCornerShape(12.dp))
+                  .padding(horizontal = 8.dp, vertical = 6.dp)
+                  .testTag("hud_mirror_badge"),
+              verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+                imageVector = Icons.Default.SwapHoriz,
+                contentDescription = "Inverted Controls Active",
+                tint = Color(0xFFE9D5FF),
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(3.dp))
+            Text(
+                text = "MIRROR",
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Black,
+                color = Color(0xFFF3E8FF),
+                maxLines = 1
             )
           }
         }
       }
 
-      // Coins, Score/Combo, Diyas & Clues Cluster
+      // Center Zone: Coins, Score/Combo, Diyas & Clues/Relics (scroll-safe on narrow viewports)
       Row(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier
+              .weight(1f)
+              .horizontalScroll(rememberScrollState()),
+          horizontalArrangement = Arrangement.spacedBy(7.dp, Alignment.CenterHorizontally),
           verticalAlignment = Alignment.CenterVertically
       ) {
-        // Coins Pill
+        val allCoinsCollected = totalCoins > 0 && hudSnapshot.coinsCollected >= totalCoins
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC101E24))
-                .border(1.8.dp, Color(0xFFFFD700), RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .background(Color(0xD8101E24))
+                .border(
+                    width = 1.8.dp,
+                    color = if (allCoinsCollected) Color(0xFFFDE047) else Color(0xFFD97706),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                .padding(horizontal = 9.dp, vertical = 6.dp)
+                .testTag("hud_coins_pill"),
             verticalAlignment = Alignment.CenterVertically
         ) {
           Icon(
               imageVector = Icons.Default.Star,
               contentDescription = "Coins",
               tint = Color(0xFFFFD700),
-              modifier = Modifier.size(17.dp)
+              modifier = Modifier.size(16.dp)
           )
           Spacer(modifier = Modifier.width(4.dp))
           Text(
-              text = "${hudSnapshot.coinsCollected} / $totalCoins",
-              fontSize = 13.sp,
+              text = "${hudSnapshot.coinsCollected}/$totalCoins",
+              fontSize = 12.5.sp,
               fontWeight = FontWeight.Black,
-              color = Color(0xFFFFFBEB)
+              color = Color(0xFFFFFBEB),
+              maxLines = 1
           )
         }
 
@@ -270,13 +329,13 @@ fun GameplayView(
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC101E24))
+                .background(Color(0xD8101E24))
                 .border(
                     width = 1.8.dp,
                     color = if (hudSnapshot.comboMultiplier > 1) Color(0xFFFB923C) else Color(0xFF10B981),
                     shape = RoundedCornerShape(12.dp)
                 )
-                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .padding(horizontal = 9.dp, vertical = 6.dp)
                 .testTag("hud_score_pill"),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -289,15 +348,16 @@ fun GameplayView(
           Spacer(modifier = Modifier.width(3.dp))
           Text(
               text = "${hudSnapshot.score}",
-              fontSize = 13.sp,
+              fontSize = 12.5.sp,
               fontWeight = FontWeight.Black,
-              color = Color(0xFFFFFBEB)
+              color = Color(0xFFFFFBEB),
+              maxLines = 1
           )
           if (hudSnapshot.comboMultiplier > 1) {
             Spacer(modifier = Modifier.width(5.dp))
             Text(
                 text = "x${hudSnapshot.comboMultiplier}",
-                fontSize = 11.sp,
+                fontSize = 10.5.sp,
                 fontWeight = FontWeight.Black,
                 color = Color(0xFF091318),
                 modifier = Modifier
@@ -309,14 +369,14 @@ fun GameplayView(
           }
         }
 
-        // Brass Diyas Secret Flames Pill (X / 3)
+        // Brass Diyas Secret Flames Pill
         if (totalDiyas > 0) {
           Row(
               modifier = Modifier
                   .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0xCC101E24))
+                  .background(Color(0xD8101E24))
                   .border(1.8.dp, Color(0xFFF59E0B), RoundedCornerShape(12.dp))
-                  .padding(horizontal = 10.dp, vertical = 6.dp)
+                  .padding(horizontal = 9.dp, vertical = 6.dp)
                   .testTag("hud_diyas_pill"),
               verticalAlignment = Alignment.CenterVertically
           ) {
@@ -328,10 +388,11 @@ fun GameplayView(
             )
             Spacer(modifier = Modifier.width(3.dp))
             Text(
-                text = "${hudSnapshot.diyasLit} / $totalDiyas",
+                text = "${hudSnapshot.diyasLit}/$totalDiyas",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Black,
-                color = Color(0xFFFEF3C7)
+                color = Color(0xFFFEF3C7),
+                maxLines = 1
             )
           }
         }
@@ -341,9 +402,9 @@ fun GameplayView(
           Row(
               modifier = Modifier
                   .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0xCC101E24))
+                  .background(Color(0xD8101E24))
                   .border(1.8.dp, Color(0xFF14B8A6), RoundedCornerShape(12.dp))
-                  .padding(horizontal = 10.dp, vertical = 6.dp)
+                  .padding(horizontal = 9.dp, vertical = 6.dp)
                   .testTag("hud_clues_pill"),
               verticalAlignment = Alignment.CenterVertically
           ) {
@@ -355,10 +416,11 @@ fun GameplayView(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "Clues ${hudSnapshot.cluesCount} / ${StoryClueId.entries.size}",
+                text = "Clues ${hudSnapshot.cluesCount}/${StoryClueId.entries.size}",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Black,
-                color = Color(0xFFE0F2FE)
+                color = Color(0xFFE0F2FE),
+                maxLines = 1
             )
             if (hudSnapshot.resonanceDiscovered) {
               Spacer(modifier = Modifier.width(5.dp))
@@ -376,9 +438,9 @@ fun GameplayView(
           Row(
               modifier = Modifier
                   .clip(RoundedCornerShape(12.dp))
-                  .background(Color(0xCC101E24))
+                  .background(Color(0xD8101E24))
                   .border(1.8.dp, Color(0xFF38BDF8), RoundedCornerShape(12.dp))
-                  .padding(horizontal = 10.dp, vertical = 6.dp)
+                  .padding(horizontal = 9.dp, vertical = 6.dp)
                   .testTag("hud_relics_pill"),
               verticalAlignment = Alignment.CenterVertically
           ) {
@@ -390,45 +452,108 @@ fun GameplayView(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "Relics ${hudSnapshot.relicsCollected} / $totalRelics",
+                text = "Relics ${hudSnapshot.relicsCollected}/$totalRelics",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Black,
-                color = Color(0xFFE0F2FE)
+                color = Color(0xFFE0F2FE),
+                maxLines = 1
             )
           }
         }
       }
 
-      // Level Title Badge, Timer & Pause
+      // Right Zone: Challenge Progress Indicator, Timer & Pause Button
       Row(verticalAlignment = Alignment.CenterVertically) {
+        val totalChallenges = ChallengeCatalog.entries.size.coerceAtLeast(1)
         val tierColor = if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) Color(0xFFFDE047) else Color(0xFF67E8F9)
         val levelLabel = when (hudSnapshot.launchMode) {
           RunLaunchMode.CONTINUOUS_PROGRESSION ->
-            "CH ${hudSnapshot.challengeOrderIndex}/${ChallengeCatalog.entries.size}: ${engine.level.title}"
+            "CH ${hudSnapshot.challengeOrderIndex}/$totalChallenges • ${engine.level.title}"
           RunLaunchMode.REPLAY ->
-            "REPLAY • CH ${hudSnapshot.challengeOrderIndex}: ${engine.level.title}"
+            "REPLAY • CH ${hudSnapshot.challengeOrderIndex}"
           RunLaunchMode.SINGLE_STAGE ->
-            "1-${engine.level.levelId}: ${engine.level.title}"
+            "1-${engine.level.levelId} • ${engine.level.title}"
         }
+        val progressFraction = when (hudSnapshot.launchMode) {
+          RunLaunchMode.CONTINUOUS_PROGRESSION ->
+            (hudSnapshot.challengeOrderIndex.toFloat() / totalChallenges.toFloat()).coerceIn(0.05f, 1f)
+          RunLaunchMode.REPLAY -> 1f
+          RunLaunchMode.SINGLE_STAGE ->
+            if (totalCoins > 0) (hudSnapshot.coinsCollected.toFloat() / totalCoins.toFloat()).coerceIn(0.08f, 1f)
+            else 0.25f
+        }
+
         Column(
             horizontalAlignment = Alignment.End,
             modifier = Modifier
+                .widthIn(min = 120.dp, max = 225.dp)
+                .shadow(4.dp, RoundedCornerShape(12.dp))
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC101E24))
+                .background(Color(0xD8101E24))
                 .border(1.8.dp, Color(0xFF0D7377), RoundedCornerShape(12.dp))
-                .padding(horizontal = 10.dp, vertical = 4.dp)
+                .padding(horizontal = 10.dp, vertical = 5.dp)
                 .testTag(
                     if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) "hud_replay_badge"
                     else "hud_challenge_badge"
                 )
         ) {
-          Text(
-              text = levelLabel,
-              fontSize = 10.sp,
-              fontWeight = FontWeight.Bold,
-              color = tierColor
-          )
-          HudTimerText(timerTenthsProvider = { timerTenths })
+          Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(5.dp)
+          ) {
+            if (hudSnapshot.activeAdaptiveTier != AdaptiveTier.STANDARD) {
+              val (tierLabel, tierBadgeColor) = when (hudSnapshot.activeAdaptiveTier) {
+                AdaptiveTier.ASSISTED -> "ASSIST" to Color(0xFF2DD4BF)
+                AdaptiveTier.ESCALATED -> "BOOST" to Color(0xFFFBBF24)
+                AdaptiveTier.RELENTLESS -> "FIERCE" to Color(0xFFFB7185)
+                AdaptiveTier.STANDARD -> "" to Color.Transparent
+              }
+              Text(
+                  text = tierLabel,
+                  fontSize = 8.5.sp,
+                  fontWeight = FontWeight.Black,
+                  color = Color(0xFF091318),
+                  modifier = Modifier
+                      .clip(RoundedCornerShape(4.dp))
+                      .background(tierBadgeColor)
+                      .padding(horizontal = 4.dp, vertical = 1.dp)
+                      .testTag("hud_adaptive_tier_badge")
+              )
+            }
+            Text(
+                text = levelLabel,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = tierColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Spacer(modifier = Modifier.height(3.dp))
+
+          Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            Box(
+                modifier = Modifier
+                    .width(56.dp)
+                    .height(5.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1E293B))
+                    .testTag("hud_progress_bar")
+            ) {
+              Box(
+                  modifier = Modifier
+                      .fillMaxHeight()
+                      .fillMaxWidth(progressFraction)
+                      .clip(CircleShape)
+                      .background(tierColor)
+              )
+            }
+            HudTimerText(timerTenthsProvider = { timerTenths })
+          }
         }
 
         Spacer(modifier = Modifier.width(8.dp))
@@ -437,8 +562,9 @@ fun GameplayView(
             onClick = { viewModel.setUserPaused(true) },
             modifier = Modifier
                 .size(48.dp)
+                .shadow(4.dp, RoundedCornerShape(12.dp))
                 .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xCC1D313B))
+                .background(Color(0xDD1D313B))
                 .border(2.dp, Color(0xFFF59E0B), RoundedCornerShape(12.dp))
                 .testTag("button_pause")
         ) {
@@ -521,30 +647,96 @@ fun GameplayView(
       )
     }
 
-    // 4. Pause Dialog
+    // 4. Polished Pause Dialog with Quick Audio & Haptic Controls
     if (isUserPaused && victoryResult == null) {
+      val musicOn by viewModel.isMusicEnabled.collectAsState()
+      val sfxOn by viewModel.isSfxEnabled.collectAsState()
+      val vibrationOn by viewModel.isVibrationEnabled.collectAsState()
+
       Dialog(onDismissRequest = { viewModel.setUserPaused(false) }) {
         Card(
-            shape = RoundedCornerShape(18.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF101E24)),
             border = BorderStroke(2.5.dp, Color(0xFFF59E0B)),
             modifier = Modifier
-                .widthIn(max = 360.dp)
+                .widthIn(max = 380.dp)
                 .fillMaxWidth()
-                .padding(12.dp)
+                .padding(10.dp)
                 .testTag("dialog_pause")
         ) {
           Column(
-              modifier = Modifier.padding(22.dp),
+              modifier = Modifier
+                  .verticalScroll(rememberScrollState())
+                  .padding(horizontal = 20.dp, vertical = 16.dp),
               horizontalAlignment = Alignment.CenterHorizontally
           ) {
             Text(
                 text = "GAME PAUSED",
-                fontSize = 22.sp,
+                fontSize = 21.sp,
                 fontWeight = FontWeight.Black,
                 color = Color(0xFFFDE047)
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "${engine.level.title} • ${hudSnapshot.coinsCollected}/$totalCoins Coins • ${hudSnapshot.deathCount} Deaths",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF94A3B8),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Quick Audio & Haptics Toggle Strip
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF091318))
+                    .border(1.dp, Color(0xFF283D47), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+              IconButton(
+                  onClick = { viewModel.toggleMusic() },
+                  modifier = Modifier
+                      .size(48.dp)
+                      .testTag("button_pause_music")
+              ) {
+                Icon(
+                    imageVector = if (musicOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                    contentDescription = "Toggle Music",
+                    tint = if (musicOn) Color(0xFFF59E0B) else Color(0xFF64748B)
+                )
+              }
+              IconButton(
+                  onClick = { viewModel.toggleSfx() },
+                  modifier = Modifier
+                      .size(48.dp)
+                      .testTag("button_pause_sfx")
+              ) {
+                Icon(
+                    imageVector = if (sfxOn) Icons.Default.GraphicEq else Icons.Default.DoNotDisturbOn,
+                    contentDescription = "Toggle SFX",
+                    tint = if (sfxOn) Color(0xFF14B8A6) else Color(0xFF64748B)
+                )
+              }
+              IconButton(
+                  onClick = { viewModel.toggleVibration() },
+                  modifier = Modifier
+                      .size(48.dp)
+                      .testTag("button_pause_vibration")
+              ) {
+                Icon(
+                    imageVector = Icons.Default.Vibration,
+                    contentDescription = "Toggle Vibration",
+                    tint = if (vibrationOn) Color(0xFF10B981) else Color(0xFF64748B)
+                )
+              }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             Button(
                 onClick = { viewModel.setUserPaused(false) },
@@ -555,10 +747,12 @@ fun GameplayView(
                     .height(48.dp)
                     .testTag("button_resume")
             ) {
-              Text("RESUME", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF091318))
+              Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF091318), modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.width(6.dp))
+              Text("RESUME", fontWeight = FontWeight.Black, fontSize = 15.sp, color = Color(0xFF091318))
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             Button(
                 onClick = { viewModel.restartLevel() },
@@ -569,19 +763,21 @@ fun GameplayView(
                     .height(48.dp)
                     .testTag("button_restart")
             ) {
+              Icon(Icons.Default.Refresh, contentDescription = null, tint = Color(0xFFFFFBEB), modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.width(6.dp))
               Text(
                   text = if (hudSnapshot.launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION) {
                     "RESTART CHALLENGE"
                   } else {
                     "RESTART LEVEL"
                   },
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 15.sp,
+                  fontWeight = FontWeight.Black,
+                  fontSize = 14.sp,
                   color = Color(0xFFFFFBEB)
               )
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             if (hudSnapshot.launchMode == RunLaunchMode.REPLAY) {
               OutlinedButton(
@@ -594,7 +790,7 @@ fun GameplayView(
               ) {
                 Text("RUN SUMMARY", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF67E8F9))
               }
-              Spacer(modifier = Modifier.height(10.dp))
+              Spacer(modifier = Modifier.height(8.dp))
             }
 
             OutlinedButton(
@@ -605,6 +801,8 @@ fun GameplayView(
                     .height(48.dp)
                     .testTag("button_return_menu")
             ) {
+              Icon(Icons.Default.Home, contentDescription = null, tint = Color(0xFFE2E8F0), modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.width(6.dp))
               Text("RETURN TO MENU", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFE2E8F0))
             }
           }
@@ -1136,9 +1334,12 @@ private fun HudTimerText(timerTenthsProvider: () -> Int) {
   val tenths = timerTenthsProvider()
   Text(
       text = "%.1fs".format(tenths / 10f),
-      fontSize = 13.sp,
+      fontSize = 12.5.sp,
       fontWeight = FontWeight.Black,
-      color = Color(0xFFE2E8F0)
+      fontFamily = FontFamily.Monospace,
+      color = Color(0xFFE2E8F0),
+      maxLines = 1,
+      modifier = Modifier.testTag("hud_timer_text")
   )
 }
 

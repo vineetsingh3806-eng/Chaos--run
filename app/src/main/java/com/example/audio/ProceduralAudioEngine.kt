@@ -7,8 +7,13 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import java.util.EnumMap
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
+import kotlin.math.exp
 import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlin.math.tanh
 
 enum class AudioLifecycleState {
   IDLE,
@@ -16,6 +21,40 @@ enum class AudioLifecycleState {
   PAUSED,
   STOPPED,
   RELEASED
+}
+
+enum class SfxCue(val minCooldownMs: Long, val bypassTransitionSuppression: Boolean = false) {
+  JUMP(65L),
+  LAND(85L),
+  COIN(45L),
+  CRUMBLE(160L),
+  DISAPPEAR(150L),
+  CHECKPOINT(300L, bypassTransitionSuppression = true),
+  DAMAGE(180L),
+  DEATH(240L, bypassTransitionSuppression = true),
+  FAST_TROLL_DEATH(200L, bypassTransitionSuppression = true),
+  VICTORY(500L, bypassTransitionSuppression = true),
+  CHALLENGE_COMPLETE(420L, bypassTransitionSuppression = true),
+  TRAP_WARNING(170L),
+  TRAP_SNAP(110L),
+  CEILING_SLAM(150L),
+  DOOR_ESCAPE(160L),
+  FAKE_DOOR_POOF(180L),
+  MECHANISM_SHIFT(150L),
+  CLUE(250L),
+  RESONANCE(240L),
+  DISTANT_BELL(220L),
+  BOUNCE(85L),
+  ENEMY_BONK(95L),
+  DIYA(180L),
+  TREE_RUMBLE(260L),
+  BEAST_ROAR(260L),
+  GUARDIAN_GONG(320L),
+  GUARDIAN_DEFEAT(360L),
+  ECHO_SWITCH(190L),
+  LIGHTNING(220L),
+  RETRY(200L, bypassTransitionSuppression = true),
+  UI_CLICK(45L, bypassTransitionSuppression = true)
 }
 
 interface AudioStreamHandle {
@@ -178,21 +217,30 @@ private class PlatformAudioFocusController(
 /**
  * Real-time Indian chiptune & instrumental procedural audio synthesizer.
  * Uses native AudioTrack in 16-bit PCM Mono @ 22,050 Hz without external recordings.
- * Thread-safe, idempotent AudioTrack lifecycle & AudioFocus ownership.
+ * Thread-safe, idempotent AudioTrack lifecycle, anti-spam cue cooldowns,
+ * music headroom balancing, click-free de-clicked SFX envelopes, and AudioFocus ownership.
  */
 class ProceduralAudioEngine(
     private val trackBackend: AudioTrackBackend = SystemAudioTrackBackend(),
     context: Context? = null,
-    focusControllerOverride: AudioFocusController? = null
+    focusControllerOverride: AudioFocusController? = null,
+    private val timeProviderMs: () -> Long = { System.currentTimeMillis() }
 ) {
   companion object {
     private const val SAMPLE_RATE = 22050
     private const val TWO_PI = 2.0 * PI
     private const val THREAD_JOIN_TIMEOUT_MS = 600L
+
+    // Keeps atmospheric music cleanly below gameplay SFX at equal user slider positions.
+    internal const val MUSIC_HEADROOM_GAIN = 0.44f
+    internal const val SFX_HEADROOM_GAIN = 0.92f
+    private const val BURST_WINDOW_MS = 100L
+    private const val MAX_SFX_PER_BURST_WINDOW = 4
   }
 
   private val transitionLock = Any()
   private val lifecycleLock = Any()
+  private val sfxMixLock = Any()
   private val pauseSignalLock = Object()
 
   private var lifecycleState = AudioLifecycleState.IDLE
@@ -213,6 +261,21 @@ class ProceduralAudioEngine(
   @Volatile var musicVolume = 0.8f
   @Volatile var sfxVolume = 0.9f
 
+  // Anti-overlap & transition de-duplication state
+  private val lastCuePlayedAtMs = EnumMap<SfxCue, Long>(SfxCue::class.java)
+  private val recentWriteTimestamps = LongArray(MAX_SFX_PER_BURST_WINDOW)
+  private var recentWriteHead = 0
+  private var suppressAmbientUntilMs = 0L
+
+  // Diagnostic telemetry for deterministic automated verification
+  private val _totalSfxPlayed = AtomicInteger(0)
+  private val _totalSfxSuppressed = AtomicInteger(0)
+  @Volatile var lastPlayedCue: SfxCue? = null
+    private set
+
+  val totalSfxPlayed: Int get() = _totalSfxPlayed.get()
+  val totalSfxSuppressed: Int get() = _totalSfxSuppressed.get()
+
   val currentLifecycleState: AudioLifecycleState
     get() = synchronized(lifecycleLock) { lifecycleState }
 
@@ -227,32 +290,55 @@ class ProceduralAudioEngine(
   private val noteC5 = 523.25f
   private val noteD5 = 587.33f
   private val noteE5 = 659.25f
+  private val noteF5 = 698.46f
   private val noteG5 = 783.99f
 
-  // 64-step Bilawal melodic adventure phrase (4 bars of 16 steps)
+  // 128-step Bilawal A/B melodic adventure cycle (8 bars x 16 steps) to reduce repetition
   private val melodySequence = floatArrayOf(
+      // Section A: Bright climbing forest theme with breathing rests
       noteC4, 0f, noteE4, 0f, noteG4, 0f, noteA4, noteG4,
       noteE4, 0f, noteG4, 0f, noteC5, 0f, noteB4, noteA4,
-      noteG4, 0f, noteE4, 0f, noteD4, 0f, noteC4, noteD4,
-      noteE4, noteG4, noteA4, noteB4, noteC5, 0f, noteG4, 0f,
+      noteG4, 0f, noteE4, 0f, noteD4, 0f, noteC4, 0f,
+      noteE4, noteG4, noteA4, 0f, noteG4, 0f, 0f, 0f,
 
       noteC5, 0f, noteB4, 0f, noteA4, 0f, noteG4, noteE4,
       noteF4, 0f, noteA4, 0f, noteG4, 0f, noteE4, noteD4,
       noteC4, 0f, noteD4, noteE4, noteG4, 0f, noteA4, 0f,
-      noteC5, noteD5, noteC5, noteG4, noteE4, 0f, noteC4, 0f
+      noteC5, 0f, noteG4, 0f, noteE4, 0f, noteC4, 0f,
+
+      // Section B: Call-and-response soaring ridge motif with airy phrasing
+      noteG4, 0f, noteA4, 0f, noteC5, 0f, noteD5, noteE5,
+      noteD5, 0f, noteC5, 0f, noteA4, 0f, noteG4, 0f,
+      noteF4, 0f, noteA4, 0f, noteC5, 0f, noteB4, noteA4,
+      noteG4, 0f, noteE4, 0f, noteD4, 0f, 0f, 0f,
+
+      noteE5, 0f, noteD5, noteC5, noteD5, 0f, noteC5, noteA4,
+      noteG4, 0f, noteF4, 0f, noteE4, 0f, noteD4, 0f,
+      noteC4, 0f, noteE4, 0f, noteG4, 0f, noteC5, 0f,
+      noteB4, 0f, noteG4, 0f, noteC4, 0f, 0f, 0f
   )
 
-  // Sitar pluck off-beat counterpoint notes
+  // Sitar pluck off-beat counterpoint matching 128-step A/B phrases
   private val sitarSequence = floatArrayOf(
       0f, noteG4, 0f, noteE4, 0f, noteC5, 0f, noteG4,
       0f, noteC5, 0f, noteA4, 0f, noteE5, 0f, noteC5,
       0f, noteB4, 0f, noteG4, 0f, noteD5, 0f, noteB4,
-      0f, noteC5, 0f, noteG4, 0f, noteE5, 0f, noteC5,
+      0f, noteC5, 0f, 0f, 0f, noteE5, 0f, noteC5,
 
       0f, noteE5, 0f, noteC5, 0f, noteG5, 0f, noteE5,
       0f, noteD5, 0f, noteB4, 0f, noteA4, 0f, noteF4,
       0f, noteG4, 0f, noteE4, 0f, noteC5, 0f, noteG4,
-      0f, noteC5, 0f, noteG4, 0f, noteE4, 0f, noteC4
+      0f, noteC5, 0f, noteG4, 0f, noteE4, 0f, 0f,
+
+      0f, noteD5, 0f, noteB4, 0f, noteG5, 0f, noteD5,
+      0f, noteF5, 0f, noteD5, 0f, noteC5, 0f, noteA4,
+      0f, noteC5, 0f, noteA4, 0f, noteE5, 0f, noteC5,
+      0f, noteD5, 0f, noteB4, 0f, noteG4, 0f, 0f,
+
+      0f, noteG5, 0f, noteE5, 0f, noteC5, 0f, noteG4,
+      0f, noteB4, 0f, noteG4, 0f, noteA4, 0f, noteF4,
+      0f, noteG4, 0f, noteE4, 0f, noteC5, 0f, noteG4,
+      0f, noteE4, 0f, noteD4, 0f, noteC4, 0f, 0f
   )
 
   init {
@@ -274,6 +360,38 @@ class ProceduralAudioEngine(
     }
   }
 
+  fun computeEffectiveMusicGain(): Float {
+    if (!isMusicEnabled) return 0f
+    val duckFactor = if (isFocusDucked) 0.25f else 1.0f
+    return musicVolume.coerceIn(0f, 1f) * MUSIC_HEADROOM_GAIN * duckFactor
+  }
+
+  fun computeEffectiveSfxGain(): Float {
+    if (!isSfxEnabled) return 0f
+    val duckFactor = if (isFocusDucked) 0.35f else 1.0f
+    return sfxVolume.coerceIn(0f, 1f) * SFX_HEADROOM_GAIN * duckFactor
+  }
+
+  /**
+   * Call on retry or challenge transition to prevent duplicate ambient/landing/trap audio bursts.
+   */
+  fun onTransitionOrRetry(suppressAmbientMs: Long = 150L, playRetryCue: Boolean = false) {
+    synchronized(sfxMixLock) {
+      val now = timeProviderMs()
+      suppressAmbientUntilMs = now + suppressAmbientMs.coerceAtLeast(0L)
+      // Reset transient platform/trap cooldowns so new attempt starts clean after suppression window
+      lastCuePlayedAtMs.remove(SfxCue.LAND)
+      lastCuePlayedAtMs.remove(SfxCue.CRUMBLE)
+      lastCuePlayedAtMs.remove(SfxCue.DISAPPEAR)
+      lastCuePlayedAtMs.remove(SfxCue.TRAP_SNAP)
+      lastCuePlayedAtMs.remove(SfxCue.TRAP_WARNING)
+      lastCuePlayedAtMs.remove(SfxCue.MECHANISM_SHIFT)
+    }
+    if (playRetryCue) {
+      playRetryCue()
+    }
+  }
+
   fun startMusic() {
     synchronized(transitionLock) {
       startMusicLocked()
@@ -281,7 +399,6 @@ class ProceduralAudioEngine(
   }
 
   private fun startMusicLocked() {
-    // Ensure any stale/stopped music thread has exited cleanly before checking/allocating.
     val staleThreadToJoin: Thread?
     val staleTrackToRelease: AudioStreamHandle?
     synchronized(lifecycleLock) {
@@ -340,7 +457,7 @@ class ProceduralAudioEngine(
 
   private fun runMusicLoop(generation: Long, track: AudioStreamHandle) {
     try {
-      val tempoBpm = 108
+      val tempoBpm = 104
       val stepSamples = (SAMPLE_RATE * 60f / (tempoBpm * 4f)).toInt()
       val buffer = ShortArray(stepSamples)
 
@@ -381,60 +498,62 @@ class ProceduralAudioEngine(
           continue
         }
 
-        val activeMusic = isMusicEnabled
-        val duckFactor = if (isFocusDucked) 0.25f else 1.0f
-        val vol = if (activeMusic) musicVolume * duckFactor else 0f
+        val vol = computeEffectiveMusicGain().toDouble()
 
-        val melodyFreq = melodySequence[stepIndex % melodySequence.size]
-        val sitarFreq = sitarSequence[stepIndex % sitarSequence.size]
-        val isBayanBeat = (stepIndex % 8 == 0) || (stepIndex % 8 == 4)
-        val isDayanClick = (stepIndex % 8 == 2) || (stepIndex % 8 == 6)
+        val seqStep = stepIndex % melodySequence.size
+        val melodyFreq = melodySequence[seqStep]
+        val sitarFreq = sitarSequence[seqStep]
+        val isBayanBeat = (seqStep % 8 == 0) || (seqStep % 16 == 12)
+        val isDayanClick = (seqStep % 8 == 2) || (seqStep % 8 == 6)
+        // Subtle 4-bar breathing dynamics so loop feels musical & non-fatiguing
+        val phraseSwell = 0.85 + 0.15 * sin(TWO_PI * seqStep / melodySequence.size.toDouble())
 
         for (i in 0 until stepSamples) {
           val t = (sampleCount + i).toDouble() / SAMPLE_RATE
           val stepT = i.toDouble() / stepSamples
+          val attack = (stepT / 0.06).coerceIn(0.0, 1.0)
 
           val drone1 = sin(TWO_PI * noteC4 * t)
-          val drone2 = sin(TWO_PI * (noteG4 + 0.35) * t)
-          val tanpura = (drone1 * 0.12 + drone2 * 0.08)
+          val drone2 = sin(TWO_PI * (noteG4 + 0.30) * t)
+          val tanpura = (drone1 * 0.085 + drone2 * 0.055)
 
           var bansuri = 0.0
           if (melodyFreq > 0f) {
-            val vibrato = 1.0 + 0.015 * sin(TWO_PI * 5.2 * t)
-            val envelope = (1.0 - stepT * 0.4).coerceAtLeast(0.0)
+            val vibrato = 1.0 + 0.011 * sin(TWO_PI * 5.0 * t)
+            val envelope = attack * (1.0 - stepT * 0.45).coerceAtLeast(0.0)
             val fund = sin(TWO_PI * (melodyFreq * vibrato) * t)
-            val harm = 0.25 * sin(TWO_PI * (melodyFreq * 2.0 * vibrato) * t)
-            bansuri = (fund + harm) * envelope * 0.32
+            val harm = 0.20 * sin(TWO_PI * (melodyFreq * 2.0 * vibrato) * t)
+            bansuri = (fund + harm) * envelope * 0.28 * phraseSwell
           }
 
           var sitar = 0.0
           if (sitarFreq > 0f) {
-            val decay = Math.exp(-stepT * 6.5)
-            val pluck = sin(TWO_PI * sitarFreq * t) + 0.4 * sin(TWO_PI * sitarFreq * 3.0 * t)
-            sitar = pluck * decay * 0.22
+            val decay = exp(-stepT * 6.8)
+            val pluck = sin(TWO_PI * sitarFreq * t) + 0.32 * sin(TWO_PI * sitarFreq * 3.0 * t)
+            sitar = pluck * attack * decay * 0.18
           }
 
           var bayan = 0.0
           if (isBayanBeat) {
-            val sweepFreq = 45.0 + 65.0 * Math.exp(-stepT * 8.0)
-            val bayanEnv = Math.exp(-stepT * 5.0)
-            bayan = sin(TWO_PI * sweepFreq * t) * bayanEnv * 0.35
+            val sweepFreq = 48.0 + 62.0 * exp(-stepT * 8.5)
+            val bayanEnv = exp(-stepT * 5.2)
+            bayan = sin(TWO_PI * sweepFreq * t) * attack * bayanEnv * 0.28
           }
 
           var dayan = 0.0
-          if (isDayanClick && stepT < 0.15) {
-            val clickEnv = (1.0 - stepT / 0.15).coerceAtLeast(0.0)
-            dayan = sin(TWO_PI * 980.0 * t) * clickEnv * 0.18
+          if (isDayanClick && stepT < 0.14) {
+            val clickEnv = (1.0 - stepT / 0.14).coerceAtLeast(0.0)
+            dayan = sin(TWO_PI * 920.0 * t) * attack * clickEnv * 0.12
           }
 
-          val mixed = (tanpura + bansuri + sitar + bayan + dayan) * vol
-          val clamped = mixed.coerceIn(-1.0, 1.0)
-          buffer[i] = (clamped * 32767).toInt().toShort()
+          // Smooth tanh soft-clipper prevents harsh digital clipping
+          val rawSum = (tanpura + bansuri + sitar + bayan + dayan) * vol
+          val softLimited = tanh(rawSum * 1.15) * 0.92
+          buffer[i] = (softLimited.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
         }
 
         val written = track.writeBlocking(buffer, 0, stepSamples)
         if (written < 0) {
-          // Track stopped or invalid; exit loop safely.
           break
         }
         sampleCount += stepSamples
@@ -586,6 +705,9 @@ class ProceduralAudioEngine(
         sfxToRelease.release()
       } catch (_: Exception) {}
     }
+    synchronized(sfxMixLock) {
+      lastCuePlayedAtMs.clear()
+    }
   }
 
   private fun cleanupMusicResources(thread: Thread?, track: AudioStreamHandle?) {
@@ -619,7 +741,42 @@ class ProceduralAudioEngine(
 
   fun hasActiveSfxTrack(): Boolean = synchronized(lifecycleLock) { sfxTrack != null }
 
-  private fun playRawSfx(durationMs: Int, generator: (t: Double, progress: Double) -> Double) {
+  private fun tryAcquireSfxSlot(cue: SfxCue): Boolean {
+    synchronized(sfxMixLock) {
+      val now = timeProviderMs()
+      if (!cue.bypassTransitionSuppression && now < suppressAmbientUntilMs) {
+        _totalSfxSuppressed.incrementAndGet()
+        return false
+      }
+      val lastPlayed = lastCuePlayedAtMs[cue]
+      if (lastPlayed != null && (now - lastPlayed) < cue.minCooldownMs) {
+        _totalSfxSuppressed.incrementAndGet()
+        return false
+      }
+      if (!cue.bypassTransitionSuppression) {
+        var recentInWindow = 0
+        for (ts in recentWriteTimestamps) {
+          if (ts > 0L && (now - ts) < BURST_WINDOW_MS) {
+            recentInWindow++
+          }
+        }
+        if (recentInWindow >= MAX_SFX_PER_BURST_WINDOW) {
+          _totalSfxSuppressed.incrementAndGet()
+          return false
+        }
+      }
+      lastCuePlayedAtMs[cue] = now
+      recentWriteTimestamps[recentWriteHead] = now
+      recentWriteHead = (recentWriteHead + 1) % recentWriteTimestamps.size
+      return true
+    }
+  }
+
+  private fun playRawSfx(
+      cue: SfxCue,
+      durationMs: Int,
+      generator: (t: Double, progress: Double) -> Double
+  ) {
     val activeTrack: AudioStreamHandle
     synchronized(lifecycleLock) {
       if (!isSfxEnabled ||
@@ -630,289 +787,348 @@ class ProceduralAudioEngine(
       }
       activeTrack = sfxTrack ?: return
     }
-    val samples = (SAMPLE_RATE * (durationMs / 1000.0)).toInt()
+    if (!tryAcquireSfxSlot(cue)) {
+      return
+    }
+
+    val samples = (SAMPLE_RATE * (durationMs / 1000.0)).toInt().coerceAtLeast(16)
     val buffer = ShortArray(samples)
-    val duckFactor = if (isFocusDucked) 0.35f else 1.0f
-    val vol = sfxVolume * duckFactor
+    val vol = computeEffectiveSfxGain().toDouble()
+    if (vol <= 0.0001) return
+
+    // Click-free 4ms fade-in & 8ms fade-out ramps on every procedural cue
+    val fadeInSamples = (SAMPLE_RATE * 0.004).toInt().coerceAtLeast(4).coerceAtMost(samples / 3)
+    val fadeOutSamples = (SAMPLE_RATE * 0.008).toInt().coerceAtLeast(8).coerceAtMost(samples / 2)
 
     for (i in 0 until samples) {
       val t = i.toDouble() / SAMPLE_RATE
       val progress = i.toDouble() / samples
-      val sample = generator(t, progress) * vol
-      buffer[i] = (sample.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
+      val fadeIn = if (i < fadeInSamples) i.toDouble() / fadeInSamples else 1.0
+      val distFromEnd = samples - 1 - i
+      val fadeOut = if (distFromEnd < fadeOutSamples) distFromEnd.toDouble() / fadeOutSamples else 1.0
+      val raw = generator(t, progress) * fadeIn * fadeOut * vol
+      val limited = tanh(raw * 1.1)
+      buffer[i] = (limited.coerceIn(-1.0, 1.0) * 32767).toInt().toShort()
     }
 
     try {
       activeTrack.writeNonBlocking(buffer, 0, samples)
+      _totalSfxPlayed.incrementAndGet()
+      lastPlayedCue = cue
     } catch (_: Exception) {}
   }
 
-  // Jump: 180 Hz to 520 Hz chirp over 110 ms
+  // Jump: Clean snappy 210 Hz -> 560 Hz elastic pop over 105 ms
   fun playJump() {
-    playRawSfx(110) { t, progress ->
-      val freq = 180.0 + (520.0 - 180.0) * progress
-      val env = 1.0 - progress
-      sin(TWO_PI * freq * t) * env * 0.45
+    playRawSfx(SfxCue.JUMP, 105) { t, progress ->
+      val freq = 210.0 + 350.0 * sqrt(progress)
+      val env = (1.0 - progress) * exp(-progress * 1.4)
+      (sin(TWO_PI * freq * t) + 0.18 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.44
     }
   }
 
-  // Land: 100 Hz to 40 Hz damped sine drop over 70 ms
+  // Land: Warm grounded low thud (115 Hz -> 48 Hz) over 68 ms
   fun playLand() {
-    playRawSfx(70) { t, progress ->
-      val freq = 100.0 - 60.0 * progress
-      val env = Math.exp(-progress * 5.0)
-      sin(TWO_PI * freq * t) * env * 0.5
+    playRawSfx(SfxCue.LAND, 68) { t, progress ->
+      val freq = 115.0 - 67.0 * progress
+      val env = exp(-progress * 5.8)
+      sin(TWO_PI * freq * t) * env * 0.36
     }
   }
 
-  // Coin Collect: Dual harmonic chime (B5 988 Hz -> E6 1319 Hz) over 140 ms
-  fun playCoin() {
-    playRawSfx(140) { t, progress ->
-      val freq = if (progress < 0.45) 987.77 else 1318.51
-      val env = Math.exp(-(progress % 0.45) * 6.0)
-      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.45
+  // Coin Collect: Bright harmonic chime with gentle combo pitch lift
+  fun playCoin(comboMultiplier: Int = 1) {
+    val pitchLift = (1.0 + ((comboMultiplier - 1).coerceIn(0, 4) * 0.055))
+    playRawSfx(SfxCue.COIN, 135) { t, progress ->
+      val baseFreq = if (progress < 0.42) 987.77 else 1318.51
+      val freq = baseFreq * pitchLift
+      val localEnv = exp(-((progress % 0.42) * 5.2)) * (1.0 - progress * 0.25)
+      (sin(TWO_PI * freq * t) + 0.28 * sin(TWO_PI * freq * 2.0 * t)) * localEnv * 0.44
     }
   }
 
-  // Crumble Bridge: Filtered 80 Hz to 30 Hz brownian rumble over 260 ms
+  // Trap Warning: Distinct non-grating double telegraph blip for approaching/triggered traps
+  fun playTrapWarning() {
+    playRawSfx(SfxCue.TRAP_WARNING, 95) { t, progress ->
+      val freq = if (progress < 0.48) 440.0 else 587.33
+      val pulse = if (progress in 0.42..0.52) 0.2 else 1.0
+      val env = exp(-progress * 3.2) * pulse
+      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.34
+    }
+  }
+
+  // Crumble Bridge: Filtered wooden/earthen crumble rumble over 220 ms
   fun playCrumble() {
-    playRawSfx(260) { t, progress ->
-      val freq = 80.0 - 50.0 * progress
-      val env = (1.0 - progress) * (sin(TWO_PI * 18.0 * t) * 0.5 + 0.5)
-      sin(TWO_PI * freq * t) * env * 0.6
+    playRawSfx(SfxCue.CRUMBLE, 220) { t, progress ->
+      val freq = 86.0 - 48.0 * progress
+      val env = (1.0 - progress) * (sin(TWO_PI * 16.0 * t) * 0.4 + 0.6)
+      sin(TWO_PI * freq * t) * env * 0.46
     }
   }
 
-  // Disappearing Floor: Resonant 720 Hz to 240 Hz crystalline chirp over 140 ms
+  // Disappearing Floor: Resonant crystalline vanish chirp over 130 ms
   fun playDisappear() {
-    playRawSfx(140) { t, progress ->
-      val freq = 720.0 - 480.0 * progress
-      val env = Math.exp(-progress * 4.5)
-      sin(TWO_PI * freq * t) * env * 0.45
+    playRawSfx(SfxCue.DISAPPEAR, 130) { t, progress ->
+      val freq = 700.0 - 440.0 * progress
+      val env = exp(-progress * 4.8)
+      sin(TWO_PI * freq * t) * env * 0.40
     }
   }
 
-  // Checkpoint Bell: 4-note ascending chord arpeggio (C5, E5, G5, C6) over 450 ms
+  // Checkpoint Bell: 4-note ascending chime (C5, E5, G5, C6) over 420 ms
   fun playCheckpoint() {
-    playRawSfx(450) { t, progress ->
+    playRawSfx(SfxCue.CHECKPOINT, 420) { t, progress ->
       val noteIndex = (progress * 4).toInt().coerceIn(0, 3)
       val freq = when (noteIndex) {
-        0 -> 523.25 // C5
-        1 -> 659.25 // E5
-        2 -> 783.99 // G5
-        else -> 1046.50 // C6
+        0 -> 523.25
+        1 -> 659.25
+        2 -> 783.99
+        else -> 1046.50
       }
-      val env = Math.exp(-progress * 2.5)
-      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.5
+      val env = exp(-progress * 2.4)
+      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.46
     }
   }
 
-  // Damage: 220 Hz to 110 Hz square/triangle buzz over 180 ms
+  // Damage: Soft-filtered low brass impact buzz (no harsh digital square clip) over 170 ms
   fun playDamage() {
-    playRawSfx(180) { t, progress ->
-      val freq = 220.0 - 110.0 * progress
-      val env = 1.0 - progress
-      val square = if (sin(TWO_PI * freq * t) >= 0) 0.6 else -0.6
-      square * env * 0.5
+    playRawSfx(SfxCue.DAMAGE, 170) { t, progress ->
+      val freq = 205.0 - 95.0 * progress
+      val env = exp(-progress * 3.4) * (1.0 - progress * 0.3)
+      val warmBuzz = sin(TWO_PI * freq * t) + 0.45 * sin(TWO_PI * freq * 2.0 * t) + 0.2 * sin(TWO_PI * freq * 3.0 * t)
+      warmBuzz * 0.55 * env * 0.48
     }
   }
 
-  // Death: Descending sweep (380 Hz down to 80 Hz) over 380 ms
+  // Death: Crisp comedic descending slide (360 Hz -> 85 Hz) over 320 ms
   fun playDeath() {
-    playRawSfx(380) { t, progress ->
-      val freq = 380.0 - 300.0 * progress
-      val env = Math.exp(-progress * 3.5)
-      sin(TWO_PI * freq * t) * env * 0.6
+    playRawSfx(SfxCue.DEATH, 320) { t, progress ->
+      val freq = 360.0 - 275.0 * progress
+      val env = exp(-progress * 3.4)
+      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.52
     }
   }
 
-  // Victory: Celebratory 5-note fanfare (Sa-Re-Ga-Pa-Sa) over 650 ms
+  // Retry Feedback: Quick crisp reset spring cue (240 Hz -> 420 Hz) over 95 ms
+  fun playRetryCue() {
+    playRawSfx(SfxCue.RETRY, 95) { t, progress ->
+      val freq = 240.0 + 180.0 * progress
+      val env = sin(PI * progress)
+      (sin(TWO_PI * freq * t) + 0.15 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.34
+    }
+  }
+
+  // UI Tap Feedback: Gentle woody percussion click over 55 ms
+  fun playUiClick() {
+    playRawSfx(SfxCue.UI_CLICK, 55) { t, progress ->
+      val freq = 520.0 - 160.0 * progress
+      val env = exp(-progress * 6.5)
+      sin(TWO_PI * freq * t) * env * 0.26
+    }
+  }
+
+  // Mid-run Challenge Clear: Clean 4-note ascending chime (G4 -> B4 -> D5 -> G5) over 340 ms
+  fun playChallengeComplete() {
+    playRawSfx(SfxCue.CHALLENGE_COMPLETE, 340) { t, progress ->
+      val noteIndex = (progress * 4).toInt().coerceIn(0, 3)
+      val freq = when (noteIndex) {
+        0 -> 392.00
+        1 -> 493.88
+        2 -> 587.33
+        else -> 783.99
+      }
+      val env = exp(-progress * 2.0) * (1.0 - progress * 0.25)
+      (sin(TWO_PI * freq * t) + 0.25 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.48
+    }
+  }
+
+  // Final Victory: Celebratory 5-note Bilawal fanfare (C5-D5-E5-G5-C6) over 600 ms
   fun playVictory() {
-    playRawSfx(650) { t, progress ->
+    playRawSfx(SfxCue.VICTORY, 600) { t, progress ->
       val noteIndex = (progress * 5).toInt().coerceIn(0, 4)
       val freq = when (noteIndex) {
-        0 -> noteC4.toDouble()
-        1 -> noteD4.toDouble()
-        2 -> noteE4.toDouble()
-        3 -> noteG4.toDouble()
-        else -> noteC5.toDouble()
+        0 -> 523.25
+        1 -> 587.33
+        2 -> 659.25
+        3 -> 783.99
+        else -> 1046.50
       }
-      val env = (1.0 - progress * 0.3)
-      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.5
+      val env = (1.0 - progress * 0.28) * exp(-progress * 1.1)
+      (sin(TWO_PI * freq * t) + 0.28 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.50
     }
   }
 
   // Clue Discovery: Soft, warm wooden-bell harmonic chime (E5 -> B5) over 240 ms
   fun playClueDiscovery() {
-    playRawSfx(240) { t, progress ->
+    playRawSfx(SfxCue.CLUE, 240) { t, progress ->
       val freq = if (progress < 0.5) 659.25 else 987.77
-      val env = Math.exp(-progress * 4.0) * (1.0 - progress * 0.2)
-      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.28
+      val env = exp(-progress * 4.0) * (1.0 - progress * 0.2)
+      (sin(TWO_PI * freq * t) + 0.2 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.30
     }
   }
 
-  // Resonance Hum: Gentle crystalline breath chime (G4 + D5 fifth) over 280 ms
+  // Resonance Hum: Gentle crystalline breath chime (G4 + D5 fifth) over 260 ms
   fun playResonanceHum() {
-    playRawSfx(280) { t, progress ->
-      val env = sin(PI * progress) * 0.26
+    playRawSfx(SfxCue.RESONANCE, 260) { t, progress ->
+      val env = sin(PI * progress) * 0.28
       (sin(TWO_PI * 392.0 * t) + 0.35 * sin(TWO_PI * 587.33 * t)) * env
     }
   }
 
-  // Distant Bell Cue: Muffled far-off shrine chime (D5 + A4) for Echoing Bridge warning over 320 ms
+  // Distant Bell Cue: Muffled far-off shrine chime (D5 + A4) over 280 ms
   fun playDistantBellCue() {
-    playRawSfx(320) { t, progress ->
-      val env = Math.exp(-progress * 3.8) * (1.0 - progress * 0.25)
-      (sin(TWO_PI * 587.33 * t) * 0.6 + sin(TWO_PI * 440.0 * t) * 0.4) * env * 0.22
+    playRawSfx(SfxCue.DISTANT_BELL, 280) { t, progress ->
+      val env = exp(-progress * 3.8) * (1.0 - progress * 0.25)
+      (sin(TWO_PI * 587.33 * t) * 0.6 + sin(TWO_PI * 440.0 * t) * 0.4) * env * 0.26
     }
   }
 
-  // Dholak Bounce Drum: Punchy Tabla/Dholak pitch-lift thump (95 Hz -> 260 Hz) over 170 ms
+  // Dholak Bounce Drum: Punchy pitch-lift thump (95 Hz -> 260 Hz) over 160 ms
   fun playBounce() {
-    playRawSfx(170) { t, progress ->
-      val freq = 95.0 + 165.0 * Math.sqrt(progress)
-      val env = Math.exp(-progress * 3.6)
-      (sin(TWO_PI * freq * t) + 0.35 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.55
+    playRawSfx(SfxCue.BOUNCE, 160) { t, progress ->
+      val freq = 95.0 + 165.0 * sqrt(progress)
+      val env = exp(-progress * 3.6)
+      (sin(TWO_PI * freq * t) + 0.35 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.50
     }
   }
 
-  // Kanta Beetle Stomp Bonk: Playful percussive woodblock + ascending pop over 150 ms
+  // Kanta Beetle Stomp Bonk: Playful percussive woodblock + ascending pop over 140 ms
   fun playEnemyBonk() {
-    playRawSfx(150) { t, progress ->
+    playRawSfx(SfxCue.ENEMY_BONK, 140) { t, progress ->
       val freq = if (progress < 0.35) 310.0 else 620.0
-      val env = Math.exp(-progress * 5.0)
-      (sin(TWO_PI * freq * t) + 0.25 * sin(TWO_PI * freq * 2.5 * t)) * env * 0.48
+      val env = exp(-progress * 5.0)
+      (sin(TWO_PI * freq * t) + 0.25 * sin(TWO_PI * freq * 2.5 * t)) * env * 0.46
     }
   }
 
-  // Brass Diya Ignition: Warm festive tri-tone sparkle (G5 -> B5 -> D6) over 280 ms
+  // Brass Diya Ignition: Warm festive tri-tone sparkle (G5 -> B5 -> D6) over 260 ms
   fun playDiyaLit() {
-    playRawSfx(280) { t, progress ->
+    playRawSfx(SfxCue.DIYA, 260) { t, progress ->
       val freq = when {
         progress < 0.33 -> 783.99
         progress < 0.66 -> 987.77
         else -> 1174.66
       }
-      val env = Math.exp(-progress * 2.8)
+      val env = exp(-progress * 2.8)
       (sin(TWO_PI * freq * t) + 0.25 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.42
     }
   }
 
-  // Awakening Tree Rumble: Deep earthen growl + woody snap over 340 ms
+  // Awakening Tree Rumble: Deep earthen growl + woody snap over 320 ms
   fun playTreeRumble() {
-    playRawSfx(340) { t, progress ->
+    playRawSfx(SfxCue.TREE_RUMBLE, 320) { t, progress ->
       val freq = 68.0 - 24.0 * progress
       val pulse = 0.65 + 0.35 * sin(TWO_PI * 14.0 * t)
       val env = (1.0 - progress) * pulse
-      (sin(TWO_PI * freq * t) + 0.4 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.58
+      (sin(TWO_PI * freq * t) + 0.4 * sin(TWO_PI * freq * 1.5 * t)) * env * 0.52
     }
   }
 
-  // Vanar Stalker Snarl: Tense descending modulated growl (210 Hz -> 95 Hz) over 300 ms
+  // Vanar Stalker Snarl: Tense descending modulated growl (210 Hz -> 95 Hz) over 280 ms
   fun playBeastRoar() {
-    playRawSfx(300) { t, progress ->
+    playRawSfx(SfxCue.BEAST_ROAR, 280) { t, progress ->
       val freq = 210.0 - 115.0 * progress + 18.0 * sin(TWO_PI * 22.0 * t)
-      val env = sin(PI * progress) * 0.55
+      val env = sin(PI * progress) * 0.50
       val raw = sin(TWO_PI * freq * t) + 0.45 * sin(TWO_PI * freq * 2.0 * t)
       raw.coerceIn(-1.0, 1.0) * env
     }
   }
 
-  // Stone Guardian Temple Gong: Resonant deep bronze bell + shimmer over 460 ms
+  // Stone Guardian Temple Gong: Resonant deep bronze bell + shimmer over 440 ms
   fun playGuardianGong() {
-    playRawSfx(460) { t, progress ->
-      val env = Math.exp(-progress * 2.2)
-      (sin(TWO_PI * 146.83 * t) * 0.65 + sin(TWO_PI * 220.0 * t) * 0.35 + sin(TWO_PI * 369.99 * t) * 0.2) * env * 0.55
+    playRawSfx(SfxCue.GUARDIAN_GONG, 440) { t, progress ->
+      val env = exp(-progress * 2.2)
+      (sin(TWO_PI * 146.83 * t) * 0.65 + sin(TWO_PI * 220.0 * t) * 0.35 + sin(TWO_PI * 369.99 * t) * 0.2) * env * 0.50
     }
   }
 
-  // Guardian Crystal Shatter: Bright ascending triumph chime (E5 -> G#5 -> B5 -> E6) over 420 ms
+  // Guardian Crystal Shatter: Bright ascending triumph chime (E5 -> G#5 -> B5 -> E6) over 400 ms
   fun playGuardianDefeat() {
-    playRawSfx(420) { t, progress ->
+    playRawSfx(SfxCue.GUARDIAN_DEFEAT, 400) { t, progress ->
       val freq = when {
         progress < 0.25 -> 659.25
         progress < 0.50 -> 830.61
         progress < 0.75 -> 987.77
         else -> 1318.51
       }
-      val env = Math.exp(-progress * 2.4)
-      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.52
+      val env = exp(-progress * 2.4)
+      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.48
     }
   }
 
-  // Sound-Triggered Mechanism: Echoing cavern harmonic ring (D5 -> A5 -> D6) over 340 ms
+  // Sound-Triggered Mechanism: Echoing cavern harmonic ring (D5 -> A5 -> D6) over 320 ms
   fun playEchoSwitch() {
-    playRawSfx(340) { t, progress ->
+    playRawSfx(SfxCue.ECHO_SWITCH, 320) { t, progress ->
       val freq = when {
         progress < 0.33 -> 587.33
         progress < 0.66 -> 880.00
         else -> 1174.66
       }
-      val env = Math.exp(-progress * 3.0) * (0.75 + 0.25 * sin(TWO_PI * 9.0 * t))
-      (sin(TWO_PI * freq * t) + 0.28 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.44
+      val env = exp(-progress * 3.0) * (0.75 + 0.25 * sin(TWO_PI * 9.0 * t))
+      (sin(TWO_PI * freq * t) + 0.28 * sin(TWO_PI * freq * 2.0 * t)) * env * 0.42
     }
   }
 
-  // Monsoon Lightning Strike: Sharp electric crackle + low thunder roll over 320 ms
+  // Monsoon Lightning Strike: Electric crackle + low thunder roll over 300 ms
   fun playLightningStrike() {
-    playRawSfx(320) { t, progress ->
+    playRawSfx(SfxCue.LIGHTNING, 300) { t, progress ->
       val crack = if (progress < 0.18) sin(TWO_PI * (1450.0 - progress * 4000.0) * t) * (1.0 - progress / 0.18) else 0.0
-      val thunder = sin(TWO_PI * (92.0 - 48.0 * progress) * t) * Math.exp(-progress * 3.2)
-      (crack * 0.45 + thunder * 0.65).coerceIn(-1.0, 1.0) * 0.55
+      val thunder = sin(TWO_PI * (92.0 - 48.0 * progress) * t) * exp(-progress * 3.2)
+      (crack * 0.42 + thunder * 0.62).coerceIn(-1.0, 1.0) * 0.50
     }
   }
 
-  // Ruins Mechanism Shift / Pillar Sink: Low stone grind over 220 ms
+  // Ruins Mechanism Shift / Pillar Sink: Low stone grind over 200 ms
   fun playMechanismShift() {
-    playRawSfx(220) { t, progress ->
+    playRawSfx(SfxCue.MECHANISM_SHIFT, 200) { t, progress ->
       val freq = 105.0 - 45.0 * progress
       val grit = sin(TWO_PI * 26.0 * t) * 0.35 + 0.65
-      sin(TWO_PI * freq * t) * grit * (1.0 - progress) * 0.48
+      sin(TWO_PI * freq * t) * grit * (1.0 - progress) * 0.42
     }
   }
 
   // Troll Trap Snap: Sharp spring-loaded spike/trap snap over 95 ms
   fun playTrapSnap() {
-    playRawSfx(95) { t, progress ->
-      val freq = if (progress < 0.35) 680.0 - 240.0 * progress else 340.0 + 180.0 * progress
-      val env = Math.exp(-progress * 5.2)
-      sin(TWO_PI * freq * t) * env * 0.48
+    playRawSfx(SfxCue.TRAP_SNAP, 95) { t, progress ->
+      val freq = if (progress < 0.35) 640.0 - 220.0 * progress else 340.0 + 160.0 * progress
+      val env = exp(-progress * 5.2)
+      sin(TWO_PI * freq * t) * env * 0.45
     }
   }
 
-  // Ceiling Block Slam: Punchy heavy thud over 160 ms
+  // Ceiling Block Slam: Punchy heavy thud over 150 ms
   fun playCeilingSlam() {
-    playRawSfx(160) { t, progress ->
+    playRawSfx(SfxCue.CEILING_SLAM, 150) { t, progress ->
       val freq = 92.0 - 62.0 * progress
-      val env = Math.exp(-progress * 4.5)
-      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 0.5 * t)) * env * 0.62
+      val env = exp(-progress * 4.5)
+      (sin(TWO_PI * freq * t) + 0.3 * sin(TWO_PI * freq * 0.5 * t)) * env * 0.56
     }
   }
 
-  // Cheeky Relocating Exit Door Boing/Whoosh over 170 ms
+  // Cheeky Relocating Exit Door Boing/Whoosh over 160 ms
   fun playDoorEscape() {
-    playRawSfx(170) { t, progress ->
-      val freq = 360.0 + 440.0 * sin(PI * progress)
-      val env = (1.0 - progress * 0.7) * 0.44
+    playRawSfx(SfxCue.DOOR_ESCAPE, 160) { t, progress ->
+      val freq = 360.0 + 420.0 * sin(PI * progress)
+      val env = (1.0 - progress * 0.7) * 0.42
       sin(TWO_PI * freq * t) * env
     }
   }
 
-  // Fake Exit Door Comedic "Wah-Wah" Descending Slide over 220 ms
+  // Fake Exit Door Comedic "Wah-Wah" Descending Slide over 210 ms
   fun playFakeDoorPoof() {
-    playRawSfx(220) { t, progress ->
+    playRawSfx(SfxCue.FAKE_DOOR_POOF, 210) { t, progress ->
       val freq = if (progress < 0.45) 440.0 - 80.0 * progress else 340.0 - 160.0 * progress
-      val env = (1.0 - progress * 0.5) * 0.45
+      val env = (1.0 - progress * 0.5) * 0.42
       (sin(TWO_PI * freq * t) + 0.25 * sin(TWO_PI * freq * 2.0 * t)) * env
     }
   }
 
-  // Fast Troll Death Pop-Splat over 190 ms (snappy, playful, never grating)
+  // Fast Troll Death Pop-Splat over 180 ms (snappy, playful, never grating)
   fun playFastTrollDeath() {
-    playRawSfx(190) { t, progress ->
-      val freq = if (progress < 0.22) 540.0 else 360.0 - 250.0 * progress
-      val env = Math.exp(-progress * 3.8)
-      sin(TWO_PI * freq * t) * env * 0.55
+    playRawSfx(SfxCue.FAST_TROLL_DEATH, 180) { t, progress ->
+      val freq = if (progress < 0.22) 520.0 else 350.0 - 240.0 * progress
+      val env = exp(-progress * 3.8)
+      sin(TWO_PI * freq * t) * env * 0.50
     }
   }
 }

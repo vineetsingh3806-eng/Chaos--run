@@ -89,6 +89,11 @@ class AaravCharacterRenderer {
       canvas.scale(scaleX, scaleY)
     } else if (player.state == AaravState.JUMP_UP) {
       canvas.scale(0.92f, 1.08f) // Vertical stretch
+    } else if (player.state == AaravState.FALL_DOWN) {
+      canvas.scale(0.96f, 1.04f)
+    } else if (player.state == AaravState.DAMAGE) {
+      canvas.rotate(-8f)
+      canvas.scale(1.06f, 0.94f)
     }
 
     // Draw Character Components from back to front
@@ -217,6 +222,22 @@ class AaravCharacterRenderer {
         rectTemp.set(0f, legY + 13f, 9f, legY + 19f)
         canvas.drawRoundRect(rectTemp, 3f, 3f, paintBoots)
       }
+      AaravState.FALL_DOWN -> {
+        // Free-fall braced legs
+        rectTemp.set(-8f, legY, -2f, legY + 13f)
+        canvas.drawRoundRect(rectTemp, 2f, 2f, paintPants)
+        canvas.drawRoundRect(rectTemp, 2f, 2f, paintOutline)
+        rectTemp.set(-9f, legY + 11f, 0f, legY + 17f)
+        canvas.drawRoundRect(rectTemp, 3f, 3f, paintBoots)
+        canvas.drawRoundRect(rectTemp, 3f, 3f, paintOutline)
+
+        rectTemp.set(2f, legY - 1f, 8f, legY + 11f)
+        canvas.drawRoundRect(rectTemp, 2f, 2f, paintPants)
+        canvas.drawRoundRect(rectTemp, 2f, 2f, paintOutline)
+        rectTemp.set(1f, legY + 9f, 10f, legY + 15f)
+        canvas.drawRoundRect(rectTemp, 3f, 3f, paintBoots)
+        canvas.drawRoundRect(rectTemp, 3f, 3f, paintOutline)
+      }
       else -> {
         // Standing / Idle stance
         // Left Leg
@@ -288,6 +309,11 @@ class AaravCharacterRenderer {
       canvas.drawLine(1.2f, headY + 3.8f, 4.6f, headY + 7.2f, paintOutline)
       canvas.drawLine(4.6f, headY + 3.8f, 1.2f, headY + 7.2f, paintOutline)
       canvas.drawCircle(2.8f, headY + 9.4f, 1.8f, paintOutline)
+    } else if (state == AaravState.DAMAGE) {
+      // Wince ">" eye + gritted mouth
+      canvas.drawLine(1.2f, headY + 4f, 4.4f, headY + 5.5f, paintOutline)
+      canvas.drawLine(4.4f, headY + 5.5f, 1.2f, headY + 7f, paintOutline)
+      canvas.drawLine(0.5f, headY + 8.5f, 4.5f, headY + 8.5f, paintOutline)
     } else {
       canvas.drawCircle(3f, headY + 5.5f, 1.2f, paintOutline)
       if (state == AaravState.VICTORY) {
@@ -352,11 +378,19 @@ class AaravCharacterRenderer {
         canvas.restore()
       }
       AaravState.DEATH,
+      AaravState.DAMAGE,
+      AaravState.FALL_DOWN,
       AaravState.JUMP_UP -> {
-        // Flailing arms upward in comedic surprise / jump
+        // Flailing / braced arms for jump, fall, damage & death
         canvas.save()
         canvas.translate(6f, armY)
-        canvas.rotate(if (state == AaravState.DEATH) -135f else -60f)
+        val angle = when (state) {
+          AaravState.DEATH -> -135f
+          AaravState.FALL_DOWN -> -108f
+          AaravState.DAMAGE -> 115f
+          else -> -60f
+        }
+        canvas.rotate(angle)
         rectTemp.set(-2.5f, 0f, 2.5f, 12f)
         canvas.drawRoundRect(rectTemp, 2f, 2f, paintSkin)
         canvas.drawRoundRect(rectTemp, 2f, 2f, paintOutline)

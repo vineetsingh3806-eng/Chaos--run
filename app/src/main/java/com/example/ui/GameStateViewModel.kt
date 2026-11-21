@@ -1,6 +1,11 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import com.example.audio.ProceduralAudioEngine
@@ -8,6 +13,7 @@ import com.example.data.ChallengeCatalog
 import com.example.data.ContinuousRunPersistedState
 import com.example.data.DifficultyTier
 import com.example.data.LockedChallengeConfig
+import com.example.data.PlayableCharacter
 import com.example.data.RunCompletionSummary
 import com.example.data.RunLaunchMode
 import com.example.data.SaveRepository
@@ -18,6 +24,7 @@ import com.example.engine.ChallengeCompletionOutcome
 import com.example.engine.ChaosGameEngine
 import com.example.engine.ChaosGameRenderer
 import com.example.engine.ContinuousRunCoordinator
+import com.example.engine.HapticCue
 import com.example.ui.input.MultiTouchControlState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -113,6 +120,30 @@ class GameStateViewModel(
 
   private val _isMusicMuted = MutableStateFlow(!saveRepository.isMusicEnabled())
   val isMusicMuted: StateFlow<Boolean> = _isMusicMuted.asStateFlow()
+
+  private val _isMusicEnabled = MutableStateFlow(saveRepository.isMusicEnabled())
+  val isMusicEnabled: StateFlow<Boolean> = _isMusicEnabled.asStateFlow()
+
+  private val _isSfxEnabled = MutableStateFlow(saveRepository.isSfxEnabled())
+  val isSfxEnabled: StateFlow<Boolean> = _isSfxEnabled.asStateFlow()
+
+  private val _musicVolume = MutableStateFlow(saveRepository.getMusicVolume())
+  val musicVolume: StateFlow<Float> = _musicVolume.asStateFlow()
+
+  private val _sfxVolume = MutableStateFlow(saveRepository.getSfxVolume())
+  val sfxVolume: StateFlow<Float> = _sfxVolume.asStateFlow()
+
+  private val _isVibrationEnabled = MutableStateFlow(saveRepository.isVibrationEnabled())
+  val isVibrationEnabled: StateFlow<Boolean> = _isVibrationEnabled.asStateFlow()
+
+  private val _isOnboardingCompleted = MutableStateFlow(saveRepository.isOnboardingCompleted())
+  val isOnboardingCompleted: StateFlow<Boolean> = _isOnboardingCompleted.asStateFlow()
+
+  private val _isOnboardingModalOpen = MutableStateFlow(false)
+  val isOnboardingModalOpen: StateFlow<Boolean> = _isOnboardingModalOpen.asStateFlow()
+
+  private val _selectedCharacter = MutableStateFlow(saveRepository.getSelectedCharacter())
+  val selectedCharacter: StateFlow<PlayableCharacter> = _selectedCharacter.asStateFlow()
 
   private val _discoveredClues = MutableStateFlow(saveRepository.getDiscoveredClues())
   val discoveredClues: StateFlow<Set<StoryClueId>> = _discoveredClues.asStateFlow()
@@ -301,6 +332,7 @@ class GameStateViewModel(
       )
       saveRepository.saveContinuousRunState(state, syncCommit = true)
       _continuousPersistedState.value = state
+      audioEngine.onTransitionOrRetry(suppressAmbientMs = 150L, playRetryCue = true)
       session.engine.loadChallenge(
           lockedConfig = config,
           attemptToken = continuousCoordinator.currentAttemptToken,
@@ -365,6 +397,7 @@ class GameStateViewModel(
           cumulativeTimerMs = if (launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION) continuousCoordinator.cumulativeRunTimerMs else 0L,
           cumulativeDeaths = if (launchMode == RunLaunchMode.CONTINUOUS_PROGRESSION) continuousCoordinator.cumulativeDeaths else 0
       )
+      existingSession.renderer.selectedCharacter = _selectedCharacter.value
       touchControlState.bindEngine(existingSession.engine)
       syncEffectivePause()
       _currentScreen.value = AppScreen.GAMEPLAY
@@ -372,7 +405,9 @@ class GameStateViewModel(
     }
 
     val initialRelics = saveRepository.getDiscoveredRelicIds(levelDef.relics.map { it.id })
-    val renderer = ChaosGameRenderer(getApplication())
+    val renderer = ChaosGameRenderer(getApplication()).apply {
+      selectedCharacter = _selectedCharacter.value
+    }
 
     lateinit var newEngine: ChaosGameEngine
     newEngine = ChaosGameEngine(
@@ -425,7 +460,7 @@ class GameStateViewModel(
                 schemaVersion = SaveRepository.SAVE_SCHEMA_VERSION,
                 isRunInForeground = (_currentScreen.value == AppScreen.GAMEPLAY)
             )
-            saveRepository.saveContinuousRunState(persistedState, syncCommit = true)
+            saveRepository.saveContinuousRunState(persistedState, syncCommit = false)
             _continuousPersistedState.value = persistedState
           }
         },
@@ -437,7 +472,7 @@ class GameStateViewModel(
                 schemaVersion = SaveRepository.SAVE_SCHEMA_VERSION,
                 isRunInForeground = (_currentScreen.value == AppScreen.GAMEPLAY)
             )
-            saveRepository.saveContinuousRunState(persistedState, syncCommit = true)
+            saveRepository.saveContinuousRunState(persistedState, syncCommit = false)
             _continuousPersistedState.value = persistedState
             AttemptRetryTransition(
                 lockedConfig = nextLocked,
@@ -455,7 +490,8 @@ class GameStateViewModel(
               coinsCollected = coinsCollected,
               totalCoins = totalCoins
           )
-        }
+        },
+        onHapticCue = { cue -> triggerHaptic(cue) }
     )
 
     val session = GameSession(
@@ -485,7 +521,9 @@ class GameStateViewModel(
 
     val levelDef = lockedConfig.levelDefinition
     val initialRelics = saveRepository.getDiscoveredRelicIds(levelDef.relics.map { it.id })
-    val renderer = ChaosGameRenderer(getApplication())
+    val renderer = ChaosGameRenderer(getApplication()).apply {
+      selectedCharacter = _selectedCharacter.value
+    }
 
     lateinit var newEngine: ChaosGameEngine
     newEngine = ChaosGameEngine(
@@ -516,7 +554,8 @@ class GameStateViewModel(
               coinsCollected = coinsCollected,
               totalCoins = totalCoins
           )
-        }
+        },
+        onHapticCue = { cue -> triggerHaptic(cue) }
     )
 
     val session = GameSession(
@@ -569,7 +608,7 @@ class GameStateViewModel(
                 state = persistedState,
                 completedChallengeId = outcome.completedChallengeId,
                 record = outcome.completedRecord,
-                syncCommit = true
+                syncCommit = false
             )
             _continuousPersistedState.value = persistedState
             _activeLevelId.value = outcome.nextConfig.orderIndex
@@ -600,7 +639,7 @@ class GameStateViewModel(
                 state = persistedState,
                 completedChallengeId = outcome.completedChallengeId,
                 record = outcome.completedRecord,
-                syncCommit = true
+                syncCommit = false
             )
             _continuousPersistedState.value = persistedState
             _runCompletionSummary.value = outcome.summary
@@ -628,7 +667,7 @@ class GameStateViewModel(
         saveRepository.saveReplayChallengeRecordIfImproved(
             challengeId = challengeId,
             record = updatedRecord,
-            syncCommit = true
+            syncCommit = false
         )
         _runCompletionSummary.value = continuousCoordinator.buildRunCompletionSummary()
         _continuousPersistedState.value = saveRepository.loadContinuousRunState()
@@ -752,7 +791,11 @@ class GameStateViewModel(
   }
 
   private fun syncEffectivePause() {
-    val effective = _isUserPaused.value || _isHostPaused.value || _isWindowFocusLost.value || _isFieldNotesOpen.value
+    val effective = _isUserPaused.value ||
+        _isHostPaused.value ||
+        _isWindowFocusLost.value ||
+        _isFieldNotesOpen.value ||
+        _isOnboardingModalOpen.value
     _isEffectivePaused.value = effective
     _gameSession.value?.engine?.isPaused = effective
   }
@@ -821,12 +864,54 @@ class GameStateViewModel(
     _bestScore.value = saveRepository.getBestScore(1, 1)
     _levelsProgress.value = buildLevelsProgress()
     _continuousPersistedState.value = saveRepository.loadContinuousRunState()
+    _isOnboardingCompleted.value = saveRepository.isOnboardingCompleted()
+    _isVibrationEnabled.value = saveRepository.isVibrationEnabled()
+    _selectedCharacter.value = saveRepository.getSelectedCharacter()
+    _gameSession.value?.renderer?.selectedCharacter = _selectedCharacter.value
+    val musicEnabled = saveRepository.isMusicEnabled()
+    val sfxEnabled = saveRepository.isSfxEnabled()
+    val musicVol = saveRepository.getMusicVolume()
+    val sfxVol = saveRepository.getSfxVolume()
+    _isMusicEnabled.value = musicEnabled
+    _isMusicMuted.value = !musicEnabled
+    _isSfxEnabled.value = sfxEnabled
+    _musicVolume.value = musicVol
+    _sfxVolume.value = sfxVol
+    audioEngine.isMusicEnabled = musicEnabled
+    audioEngine.isSfxEnabled = sfxEnabled
+    audioEngine.musicVolume = musicVol
+    audioEngine.sfxVolume = sfxVol
+  }
+
+  fun openOnboardingModal() {
+    _isFieldNotesOpen.value = false
+    _isChapterTrailOpen.value = false
+    _isOnboardingModalOpen.value = true
+    audioEngine.playUiClick()
+    syncEffectivePause()
+  }
+
+  fun closeOnboardingModal(markCompleted: Boolean = true) {
+    _isOnboardingModalOpen.value = false
+    if (markCompleted) {
+      completeOnboarding(syncCommit = false)
+    }
+    audioEngine.playUiClick()
+    syncEffectivePause()
+  }
+
+  fun completeOnboarding(syncCommit: Boolean = false) {
+    saveRepository.setOnboardingCompleted(true, syncCommit = syncCommit)
+    _isOnboardingCompleted.value = true
+    _isOnboardingModalOpen.value = false
+    syncEffectivePause()
   }
 
   fun toggleMusic() {
     val newState = !audioEngine.isMusicEnabled
     audioEngine.isMusicEnabled = newState
     saveRepository.setMusicEnabled(newState)
+    _isMusicEnabled.value = newState
     _isMusicMuted.value = !newState
   }
 
@@ -834,16 +919,79 @@ class GameStateViewModel(
     val newState = !audioEngine.isSfxEnabled
     audioEngine.isSfxEnabled = newState
     saveRepository.setSfxEnabled(newState)
+    _isSfxEnabled.value = newState
+    if (newState) {
+      audioEngine.playUiClick()
+    }
   }
 
   fun setMusicVolume(vol: Float) {
-    audioEngine.musicVolume = vol
-    saveRepository.setMusicVolume(vol)
+    val clamped = vol.coerceIn(0f, 1f)
+    audioEngine.musicVolume = clamped
+    saveRepository.setMusicVolume(clamped)
+    _musicVolume.value = clamped
   }
 
   fun setSfxVolume(vol: Float) {
-    audioEngine.sfxVolume = vol
-    saveRepository.setSfxVolume(vol)
+    val clamped = vol.coerceIn(0f, 1f)
+    audioEngine.sfxVolume = clamped
+    saveRepository.setSfxVolume(clamped)
+    _sfxVolume.value = clamped
+  }
+
+  fun toggleVibration() {
+    setVibrationEnabled(!_isVibrationEnabled.value)
+  }
+
+  fun setVibrationEnabled(enabled: Boolean) {
+    _isVibrationEnabled.value = enabled
+    saveRepository.setVibrationEnabled(enabled)
+    if (enabled) {
+      triggerHaptic(HapticCue.JUMP)
+    }
+  }
+
+  fun selectCharacter(character: PlayableCharacter, syncCommit: Boolean = true) {
+    saveRepository.setSelectedCharacter(character, syncCommit = syncCommit)
+    _selectedCharacter.value = character
+    _gameSession.value?.renderer?.selectedCharacter = character
+    audioEngine.playUiClick()
+  }
+
+  fun triggerHaptic(cue: HapticCue) {
+    if (!_isVibrationEnabled.value) return
+    val durationMs = when (cue) {
+      HapticCue.JUMP -> 12L
+      HapticCue.TRAP_IMPACT -> 24L
+      HapticCue.DEATH -> 34L
+      HapticCue.VICTORY -> 42L
+    }
+    try {
+      val app = getApplication<Application>()
+      val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val manager = app.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+        manager?.defaultVibrator
+      } else {
+        @Suppress("DEPRECATION")
+        app.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+      }
+      if (vibrator?.hasVibrator() == true) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          val amp = when (cue) {
+            HapticCue.JUMP -> 70
+            HapticCue.TRAP_IMPACT -> 150
+            HapticCue.DEATH -> 190
+            HapticCue.VICTORY -> 160
+          }
+          vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amp))
+        } else {
+          @Suppress("DEPRECATION")
+          vibrator.vibrate(durationMs)
+        }
+      }
+    } catch (_: Throwable) {
+      // Safe fallback in headless test environments or devices without haptic motors
+    }
   }
 
   override fun onCleared() {

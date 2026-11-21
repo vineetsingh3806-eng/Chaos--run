@@ -113,6 +113,23 @@ class TileAtlasRenderer(
     style = Paint.Style.STROKE
     strokeWidth = 2f
   }
+  private val paintCursePurple = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA855F7.toInt() }
+  private val paintCurseGlow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = 0x99C084FC.toInt()
+    style = Paint.Style.STROKE
+    strokeWidth = 2.5f
+  }
+  private val paintWindCyan = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x2838BDF8 }
+  private val paintWindArrow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = 0xCC7DD3FC.toInt()
+    style = Paint.Style.STROKE
+    strokeWidth = 2.6f
+    strokeCap = Paint.Cap.ROUND
+    strokeJoin = Paint.Join.ROUND
+  }
+  private val paintCageIron = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF64748B.toInt() }
+  private val paintPlankGold = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFD97706.toInt() }
+  private val paintPhantomFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x4438BDF8 }
 
   // Pre-allocated geometric helpers
   private val rectTemp = RectF()
@@ -1341,6 +1358,265 @@ class TileAtlasRenderer(
           canvas.drawRoundRect(rectTemp, 5f, 5f, paintTrollGhost)
           paintTrollGhost.alpha = 255
         }
+      }
+
+      TrollTrapType.SPLIT_BRIDGE -> {
+        val wingW = rectTemp.width() * 0.28f
+        if (trap.auxProgress < 0.35f) {
+          canvas.drawRoundRect(rectTemp, 4f, 4f, paintWood)
+          subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.right, rectTemp.top + 7f)
+          canvas.drawRoundRect(subRectTemp, 3f, 3f, paintMoss)
+          // Visible crack seam telegraphing exact split line
+          val cx = rectTemp.centerX()
+          pathTemp.reset()
+          pathTemp.moveTo(cx - 4f, rectTemp.top)
+          pathTemp.lineTo(cx + 3f, rectTemp.centerY())
+          pathTemp.lineTo(cx - 3f, rectTemp.bottom)
+          canvas.drawPath(pathTemp, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintWoodGrain)
+          canvas.drawRoundRect(rectTemp, 4f, 4f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintOutline)
+        } else {
+          // Left and right safe outer wings
+          subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.left + wingW, rectTemp.bottom)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintWood)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintOutline)
+          subRectTemp.set(rectTemp.right - wingW, rectTemp.top, rectTemp.right, rectTemp.bottom)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintWood)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintOutline)
+          // Center dropped slabs fading out
+          val fallAlpha = ((1f - trap.auxProgress) * 255f).toInt().coerceIn(0, 200)
+          if (fallAlpha > 12) {
+            val dropY = (trap.auxProgress - 0.35f) * 72f
+            paintWood.alpha = fallAlpha
+            subRectTemp.set(rectTemp.left + wingW + 2f, rectTemp.top + dropY, rectTemp.right - wingW - 2f, rectTemp.bottom + dropY)
+            canvas.drawRoundRect(subRectTemp, 3f, 3f, paintWood)
+            paintWood.alpha = 255
+          }
+        }
+      }
+
+      TrollTrapType.PHANTOM_LEDGE -> {
+        val alphaInt = (trap.fadeAlpha * 255f).toInt().coerceIn(45, 255)
+        paintPhantomFill.alpha = (alphaInt * 0.45f).toInt().coerceIn(25, 160)
+        paintTrollGhost.alpha = alphaInt
+        canvas.drawRoundRect(rectTemp, 6f, 6f, paintPhantomFill)
+        if (trap.isSolid) {
+          paintStoneLight.alpha = (alphaInt * 0.72f).toInt()
+          canvas.drawRoundRect(rectTemp, 6f, 6f, paintStoneLight)
+          paintStoneLight.alpha = 255
+        }
+        canvas.drawRoundRect(
+            rectTemp,
+            6f,
+            6f,
+            if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintTrollGhost
+        )
+        // Etched phantom diamond glyph clue
+        val cx = rectTemp.centerX()
+        val cy = rectTemp.centerY()
+        pathTemp.reset()
+        pathTemp.moveTo(cx - 10f, cy)
+        pathTemp.lineTo(cx, cy - 5f)
+        pathTemp.lineTo(cx + 10f, cy)
+        pathTemp.lineTo(cx, cy + 5f)
+        pathTemp.close()
+        canvas.drawPath(pathTemp, paintTrollGhost)
+        paintPhantomFill.alpha = 68
+        paintTrollGhost.alpha = 255
+      }
+
+      TrollTrapType.TILTING_PLANK -> {
+        val px = rectTemp.centerX()
+        val py = rectTemp.centerY()
+        canvas.save()
+        canvas.rotate(trap.tiltAngleDeg, px, py)
+        canvas.drawRoundRect(rectTemp, 5f, 5f, paintWood)
+        subRectTemp.set(rectTemp.left + 2f, rectTemp.top + 2f, rectTemp.right - 2f, rectTemp.top + 6f)
+        canvas.drawRoundRect(subRectTemp, 3f, 3f, paintPlankGold)
+        canvas.drawRoundRect(rectTemp, 5f, 5f, paintOutline)
+        canvas.restore()
+        // Central pivot rivet stays centered so player immediately reads seesaw behavior
+        canvas.drawCircle(px, py, 5.5f, paintBell)
+        canvas.drawCircle(px, py, 5.5f, paintOutline)
+      }
+
+      TrollTrapType.TRAILING_SPIKE -> {
+        if (trap.state == TrollTrapState.TELEGRAPH) {
+          paintCrimsonGlow.alpha = 190
+          canvas.drawRoundRect(rectTemp, 6f, 6f, paintCrimsonGlow)
+          paintCrimsonGlow.alpha = 170
+        }
+        subRectTemp.set(rectTemp.left + 3f, rectTemp.top + 8f, rectTemp.right - 3f, rectTemp.bottom - 3f)
+        canvas.drawRoundRect(subRectTemp, 5f, 5f, paintStoneDark)
+        canvas.drawRoundRect(subRectTemp, 5f, 5f, paintOutline)
+        val teethCount = (trap.width / 14f).toInt().coerceIn(2, 6)
+        val tw = rectTemp.width() / teethCount
+        for (i in 0 until teethCount) {
+          val sx = rectTemp.left + i * tw
+          pathTemp.reset()
+          pathTemp.moveTo(sx + 2f, rectTemp.top + 10f)
+          pathTemp.lineTo(sx + tw * 0.5f, rectTemp.top)
+          pathTemp.lineTo(sx + tw - 2f, rectTemp.top + 10f)
+          pathTemp.close()
+          canvas.drawPath(pathTemp, paintTrollTeeth)
+          canvas.drawPath(pathTemp, paintOutline)
+        }
+        canvas.drawCircle(rectTemp.left + 9f, rectTemp.bottom - 3f, 4f, paintTrapIron)
+        canvas.drawCircle(rectTemp.right - 9f, rectTemp.bottom - 3f, 4f, paintTrapIron)
+        canvas.drawCircle(rectTemp.centerX(), rectTemp.centerY() + 2f, 4.5f, paintTrollCrimson)
+      }
+
+      TrollTrapType.EVASIVE_PLATFORM -> {
+        canvas.drawRoundRect(rectTemp, 6f, 6f, paintStone)
+        subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.right, rectTemp.top + 7f)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintMossLight)
+        canvas.drawRoundRect(rectTemp, 6f, 6f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintOutline)
+        // Winged thruster clue underneath
+        if (trap.state == TrollTrapState.TELEGRAPH || trap.state == TrollTrapState.ACTIVE) {
+          canvas.drawCircle(rectTemp.left + 12f, rectTemp.bottom + 3f, 4f, paintFlame)
+          canvas.drawCircle(rectTemp.right - 12f, rectTemp.bottom + 3f, 4f, paintFlame)
+        } else {
+          canvas.drawCircle(rectTemp.left + 12f, rectTemp.bottom, 3.5f, paintRuneAmber)
+          canvas.drawCircle(rectTemp.right - 12f, rectTemp.bottom, 3.5f, paintRuneAmber)
+        }
+      }
+
+      TrollTrapType.YO_YO_PLATFORM -> {
+        // Draw subtle vertical guide rail connecting min..max Y so path is completely readable
+        val minY = kotlin.math.min(trap.initialY, trap.targetY) - cameraY + rectTemp.height() * 0.5f
+        val maxY = kotlin.math.max(trap.initialY, trap.targetY) - cameraY + rectTemp.height() * 0.5f
+        canvas.drawLine(rectTemp.centerX(), minY, rectTemp.centerX(), maxY, paintPendulumArc)
+        canvas.drawRoundRect(rectTemp, 6f, 6f, paintStoneLight)
+        subRectTemp.set(rectTemp.left + 4f, rectTemp.top + 4f, rectTemp.right - 4f, rectTemp.bottom - 4f)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintStoneDark)
+        canvas.drawRoundRect(rectTemp, 6f, 6f, paintOutline)
+        canvas.drawCircle(rectTemp.left + 8f, rectTemp.centerY(), 3.5f, paintBell)
+        canvas.drawCircle(rectTemp.right - 8f, rectTemp.centerY(), 3.5f, paintBell)
+      }
+
+      TrollTrapType.EXIT_SLAM_CAGE -> {
+        if (trap.state == TrollTrapState.TELEGRAPH) {
+          paintCrackPulse.color = 0xFFEF4444.toInt()
+          canvas.drawRoundRect(rectTemp, 8f, 8f, paintCrackPulse)
+          paintCrackPulse.color = 0xFFF59E0B.toInt()
+        } else if (trap.state == TrollTrapState.ACTIVE) {
+          val barDrop = rectTemp.height() * trap.auxProgress.coerceIn(0.15f, 1f)
+          // Top vaultable cage cornice
+          subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.right, rectTemp.top + 12f)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintCageIron)
+          canvas.drawRoundRect(subRectTemp, 4f, 4f, paintOutline)
+          // Left and right solid posts (14f matching collision)
+          subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.left + 14f, rectTemp.top + barDrop)
+          canvas.drawRect(subRectTemp, paintCageIron)
+          canvas.drawRect(subRectTemp, paintOutline)
+          subRectTemp.set(rectTemp.right - 14f, rectTemp.top, rectTemp.right, rectTemp.top + barDrop)
+          canvas.drawRect(subRectTemp, paintCageIron)
+          canvas.drawRect(subRectTemp, paintOutline)
+          // Inner decorative prison bars
+          val bars = 3
+          val step = (rectTemp.width() - 28f) / (bars + 1)
+          for (b in 1..bars) {
+            val bx = rectTemp.left + 14f + b * step
+            canvas.drawLine(bx, rectTemp.top + 10f, bx, rectTemp.top + barDrop, paintCageIron)
+          }
+        } else if (trap.state == TrollTrapState.ARMED) {
+          // Subtle hanging iron latch overhead clue
+          subRectTemp.set(rectTemp.left + 4f, rectTemp.top - 8f, rectTemp.right - 4f, rectTemp.top + 2f)
+          canvas.drawRoundRect(subRectTemp, 3f, 3f, paintCageIron)
+          canvas.drawRoundRect(subRectTemp, 3f, 3f, paintOutline)
+        }
+      }
+
+      TrollTrapType.FLEEING_SUN_GATE -> {
+        if (trap.state != TrollTrapState.RETIRED) {
+          val pulse = 16f + (sin(animTick * 0.25) * 4f).toFloat()
+          paintRuneAmber.alpha = if (trap.state == TrollTrapState.TELEGRAPH || trap.state == TrollTrapState.ACTIVE) 235 else 120
+          canvas.drawCircle(rectTemp.centerX(), rectTemp.centerY(), pulse, paintRuneAmber)
+          paintRuneAmber.alpha = 255
+        }
+      }
+
+      TrollTrapType.PINCER_WALLS -> {
+        val maxJaw = ((trap.width - trap.minSafeGapWidth) * 0.5f).coerceAtLeast(16f)
+        val jawW = maxJaw * trap.auxProgress.coerceIn(0.05f, 1f)
+        // Floor safe-center zone clue
+        val safeLeft = rectTemp.left + maxJaw
+        val safeRight = rectTemp.right - maxJaw
+        subRectTemp.set(safeLeft, rectTemp.bottom - 6f, safeRight, rectTemp.bottom)
+        canvas.drawRect(subRectTemp, paintRuneGlow)
+        // Left & right jaws matching collision width
+        subRectTemp.set(rectTemp.left, rectTemp.top, rectTemp.left + jawW, rectTemp.bottom)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintGateStone)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintOutline)
+        canvas.drawCircle(subRectTemp.right - 6f, subRectTemp.centerY(), 4f, paintTrollCrimson)
+
+        subRectTemp.set(rectTemp.right - jawW, rectTemp.top, rectTemp.right, rectTemp.bottom)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintGateStone)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintOutline)
+        canvas.drawCircle(subRectTemp.left + 6f, subRectTemp.centerY(), 4f, paintTrollCrimson)
+      }
+
+      TrollTrapType.STALKER_CRUSH_WALL -> {
+        canvas.drawRoundRect(rectTemp, 6f, 6f, paintGateStone)
+        subRectTemp.set(rectTemp.left + 5f, rectTemp.top + 8f, rectTemp.right - 5f, rectTemp.bottom - 8f)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintStoneDark)
+        canvas.drawRoundRect(rectTemp, 6f, 6f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintOutline)
+        val eyeY = rectTemp.top + rectTemp.height() * 0.35f
+        canvas.drawCircle(rectTemp.centerX() - 7f, eyeY, 4.5f, paintStalkerEye)
+        canvas.drawCircle(rectTemp.centerX() + 7f, eyeY, 4.5f, paintStalkerEye)
+        canvas.drawCircle(rectTemp.centerX(), rectTemp.centerY() + 12f, 5f, paintTrollCrimson)
+      }
+
+      TrollTrapType.BETRAYAL_SWITCH -> {
+        val depressed = trap.activationCount > 0
+        subRectTemp.set(rectTemp.left + 4f, rectTemp.bottom - 12f, rectTemp.right - 4f, rectTemp.bottom)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintStoneDark)
+        canvas.drawRoundRect(subRectTemp, 4f, 4f, paintOutline)
+        val capTop = if (depressed) rectTemp.bottom - 15f else rectTemp.top + 6f
+        subRectTemp.set(rectTemp.left + 8f, capTop, rectTemp.right - 8f, rectTemp.bottom - 10f)
+        canvas.drawRoundRect(subRectTemp, 5f, 5f, if (depressed) paintStone else paintTrollCrimson)
+        canvas.drawRoundRect(subRectTemp, 5f, 5f, paintOutline)
+        if (!depressed) {
+          canvas.drawCircle(rectTemp.centerX(), capTop + 6f, 3.5f, paintCoinInner)
+        }
+      }
+
+      TrollTrapType.GUST_REVERSAL_ZONE -> {
+        val isTelegraph = trap.state == TrollTrapState.TELEGRAPH
+        if (isTelegraph) {
+          paintCrimsonGlow.alpha = 55
+          canvas.drawRoundRect(rectTemp, 8f, 8f, paintCrimsonGlow)
+          paintCrimsonGlow.alpha = 170
+        } else {
+          canvas.drawRoundRect(rectTemp, 8f, 8f, paintWindCyan)
+        }
+        val pushRight = (trap.gustForceX * trap.gustSign) >= 0f
+        val dir = if (pushRight) 1f else -1f
+        val arrowPaint = if (isTelegraph) paintCrackPulse else paintWindArrow
+        val rows = 3
+        val cols = (rectTemp.width() / 72f).toInt().coerceIn(2, 5)
+        for (r in 0 until rows) {
+          val ay = rectTemp.top + (r + 0.5f) * (rectTemp.height() / rows)
+          for (c in 0 until cols) {
+            val offset = ((animTick * 2.4f * dir) % 36f)
+            val ax = rectTemp.left + 20f + c * ((rectTemp.width() - 40f) / (cols - 1).coerceAtLeast(1)) + offset * 0.3f
+            pathTemp.reset()
+            pathTemp.moveTo(ax - 7f * dir, ay - 7f)
+            pathTemp.lineTo(ax + 7f * dir, ay)
+            pathTemp.lineTo(ax - 7f * dir, ay + 7f)
+            canvas.drawPath(pathTemp, arrowPaint)
+          }
+        }
+      }
+
+      TrollTrapType.MIRROR_CURSE_TOTEM -> {
+        canvas.drawRoundRect(rectTemp, 7f, 7f, paintStoneDark)
+        canvas.drawRoundRect(rectTemp, 7f, 7f, if (trap.state == TrollTrapState.TELEGRAPH) paintCrackPulse else paintCurseGlow)
+        val cx = rectTemp.centerX()
+        val cy = rectTemp.centerY()
+        val auraR = 14f + (sin(animTick * 0.22) * 3.5f).toFloat()
+        canvas.drawCircle(cx, cy, auraR, paintCurseGlow)
+        canvas.drawCircle(cx, cy - 4f, 7.5f, paintCursePurple)
+        canvas.drawCircle(cx, cy - 4f, 3.2f, paintCoinInner)
       }
     }
   }

@@ -25,6 +25,7 @@ import com.example.ui.screens.FieldNotesModal
 import com.example.ui.screens.GameplayView
 import com.example.ui.screens.HowToPlayModal
 import com.example.ui.screens.MainMenuView
+import com.example.ui.screens.OnboardingModal
 import com.example.ui.screens.RunCompletionScreen
 import com.example.ui.screens.SettingsModal
 import com.example.ui.theme.MyApplicationTheme
@@ -72,6 +73,7 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
     ) {
       val isFieldNotesOpen by viewModel.isFieldNotesOpen.collectAsState()
       val isChapterTrailOpen by viewModel.isChapterTrailOpen.collectAsState()
+      val isOnboardingModalOpen by viewModel.isOnboardingModalOpen.collectAsState()
       val isUserPaused by viewModel.isUserPaused.collectAsState()
       val victoryResult by viewModel.victoryResult.collectAsState()
       val runCompletionSummary by viewModel.runCompletionSummary.collectAsState()
@@ -87,19 +89,19 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
           }
           AppScreen.GAMEPLAY -> {
             BackHandler(
-                enabled = !isFieldNotesOpen && !isChapterTrailOpen &&
+                enabled = !isFieldNotesOpen && !isChapterTrailOpen && !isOnboardingModalOpen &&
                     victoryResult == null && !isUserPaused
             ) {
               viewModel.setUserPaused(true)
             }
             BackHandler(
-                enabled = !isFieldNotesOpen && !isChapterTrailOpen &&
+                enabled = !isFieldNotesOpen && !isChapterTrailOpen && !isOnboardingModalOpen &&
                     victoryResult == null && isUserPaused
             ) {
               viewModel.setUserPaused(false)
             }
             BackHandler(
-                enabled = !isFieldNotesOpen && !isChapterTrailOpen &&
+                enabled = !isFieldNotesOpen && !isChapterTrailOpen && !isOnboardingModalOpen &&
                     victoryResult != null
             ) {
               if (runLaunchMode == RunLaunchMode.REPLAY) {
@@ -133,21 +135,28 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
             )
           }
           AppScreen.HOW_TO_PLAY -> {
-            BackHandler {
+            BackHandler(enabled = !isOnboardingModalOpen) {
               viewModel.returnToMainMenu()
             }
-            HowToPlayModal(onBack = { viewModel.returnToMainMenu() })
+            HowToPlayModal(
+                onBack = { viewModel.returnToMainMenu() },
+                onOpenOnboarding = { viewModel.openOnboardingModal() }
+            )
           }
           AppScreen.SETTINGS -> {
-            BackHandler {
+            BackHandler(enabled = !isOnboardingModalOpen) {
               viewModel.returnToMainMenu()
             }
-            SettingsModal(viewModel = viewModel, onBack = { viewModel.returnToMainMenu() })
+            SettingsModal(
+                viewModel = viewModel,
+                onBack = { viewModel.returnToMainMenu() },
+                onOpenOnboarding = { viewModel.openOnboardingModal() }
+            )
           }
         }
 
         if (isChapterTrailOpen) {
-          BackHandler {
+          BackHandler(enabled = !isOnboardingModalOpen) {
             viewModel.closeChapterTrail()
           }
           ChapterTrailModal(
@@ -160,13 +169,23 @@ fun ChaosRunApp(viewModel: GameStateViewModel) {
         }
 
         if (isFieldNotesOpen) {
-          BackHandler {
+          BackHandler(enabled = !isOnboardingModalOpen) {
             viewModel.closeFieldNotes()
           }
           FieldNotesModal(
               discoveredClues = discoveredClues,
               isResonanceStoneDiscovered = isResonanceFound,
               onClose = { viewModel.closeFieldNotes() }
+          )
+        }
+
+        if (isOnboardingModalOpen) {
+          BackHandler {
+            viewModel.closeOnboardingModal(markCompleted = true)
+          }
+          OnboardingModal(
+              onSkip = { viewModel.closeOnboardingModal(markCompleted = true) },
+              onFinish = { viewModel.closeOnboardingModal(markCompleted = true) }
           )
         }
       }

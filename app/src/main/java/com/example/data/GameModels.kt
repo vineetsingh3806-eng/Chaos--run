@@ -39,6 +39,58 @@ enum class AaravState {
   VICTORY
 }
 
+/**
+ * Exactly four playable cartoon runners sharing identical physics and hitboxes.
+ */
+enum class PlayableCharacter(
+    val id: String,
+    val displayName: String,
+    val subtitle: String,
+    val description: String,
+    val accentColorHex: Long
+) {
+  AARAV(
+      id = "aarav",
+      displayName = "Aarav",
+      subtitle = "The Saffron Seeker",
+      description = "Turbaned trailblazer with fluttering scarf & explorer goggles.",
+      accentColorHex = 0xFFF59E0B
+  ),
+  GOLU(
+      id = "golu",
+      displayName = "Golu",
+      subtitle = "The Snack Chef",
+      description = "Chubby goofball in a tilted pot-hat with giant googly eyes.",
+      accentColorHex = 0xFFEF4444
+  ),
+  VEGA(
+      id = "vega",
+      displayName = "Vega",
+      subtitle = "The Volt Sprinter",
+      description = "Hyper-charged dasher with spiky cyan hair, shades & winged kicks.",
+      accentColorHex = 0xFF06B6D4
+  ),
+  ROKO(
+      id = "roko",
+      displayName = "Roko",
+      subtitle = "The Clockwork Tinker",
+      description = "Quirky tin-helmet sprite with a spinning wind-up key & spring boots.",
+      accentColorHex = 0xFFA855F7
+  );
+
+  companion object {
+    val DEFAULT: PlayableCharacter = AARAV
+
+    fun fromId(rawId: String?): PlayableCharacter {
+      if (rawId.isNullOrBlank()) return DEFAULT
+      val normalized = rawId.trim().lowercase()
+      return entries.firstOrNull {
+        it.id == normalized || it.name.lowercase() == normalized
+      } ?: DEFAULT
+    }
+  }
+}
+
 enum class DifficultyTier(
     val label: String,
     val subtitle: String,
@@ -682,6 +734,7 @@ data class PillarSnapshot(
 // --- Troll / Rage Platformer Data-Driven Trap System ---
 
 enum class TrollTrapType {
+  // Existing 11 mechanics
   DISAPPEARING_FLOOR,
   DELAYED_CRUMBLE,
   SURPRISE_SPIKE_POP,
@@ -692,15 +745,33 @@ enum class TrollTrapType {
   MOVING_CRUSH_WALL,
   FALLING_CEILING_BLOCK,
   FAKE_CHECKPOINT,
-  TIMED_BLINK_PLATFORM
+  TIMED_BLINK_PLATFORM,
+  // Phase 4: 13 original mechanics
+  SPLIT_BRIDGE,
+  PHANTOM_LEDGE,
+  TILTING_PLANK,
+  TRAILING_SPIKE,
+  EVASIVE_PLATFORM,
+  YO_YO_PLATFORM,
+  EXIT_SLAM_CAGE,
+  FLEEING_SUN_GATE,
+  PINCER_WALLS,
+  STALKER_CRUSH_WALL,
+  BETRAYAL_SWITCH,
+  GUST_REVERSAL_ZONE,
+  MIRROR_CURSE_TOTEM
 }
 
 enum class TrapTriggerType {
+  // Existing 5 behaviours
   ON_PROXIMITY_X,
   ON_STEP,
   ON_JUMP_ABOVE,
   ON_TIMER_CYCLE,
-  ON_APPROACH_EXIT
+  ON_APPROACH_EXIT,
+  // Phase 4: 2 new event behaviours
+  ON_COIN_COLLECTED,
+  ON_TRAP_ACTIVATED
 }
 
 enum class TrollTrapState {
@@ -711,7 +782,7 @@ enum class TrollTrapState {
 }
 
 /**
- * Deterministic, resettable trap unit powering all World 1 Troll Platformer gags.
+ * Deterministic, resettable trap unit powering all CHAOS RUN 5 trap mechanics.
  */
 data class TrollTrap(
     val id: Int,
@@ -737,27 +808,61 @@ data class TrollTrap(
     val linkedDoorTargetX: Float? = null,
     val linkedDoorTargetY: Float? = null,
     val quipPopup: String? = null,
+    val triggerCoinId: Int? = null,
+    val triggerSourceTrapId: Int? = null,
+    val linkedTrapId: Int? = null,
+    val chainDelayFrames: Int = 0,
+    val secondaryX: Float = targetX,
+    val secondaryY: Float = targetY,
+    val maxActivations: Int = 1,
+    val maxTiltDegrees: Float = 22f,
+    val minSafeGapWidth: Float = 52f,
+    val effectDurationFrames: Int = 160,
+    val gustForceX: Float = -0.34f,
+    val gustFlipIntervalFrames: Int = 120,
     var x: Float = initialX,
     var y: Float = initialY,
     var vx: Float = 0f,
     var vy: Float = 0f,
     var state: TrollTrapState = TrollTrapState.ARMED,
     var stateTimerFrames: Int = phaseOffsetFrames,
-    var isSolid: Boolean = (type == TrollTrapType.DISAPPEARING_FLOOR ||
-        type == TrollTrapType.FAKE_SAFE_PLATFORM ||
-        type == TrollTrapType.DELAYED_CRUMBLE ||
-        type == TrollTrapType.MOVING_CRUSH_WALL ||
-        type == TrollTrapType.FALLING_CEILING_BLOCK ||
-        type == TrollTrapType.TIMED_BLINK_PLATFORM),
+    var isSolid: Boolean = isInitiallySolid(type),
     var isVisible: Boolean = true,
     var morphSpikeHeight: Float = 0f,
     var hasRelocated: Boolean = false,
     var dropOffsetY: Float = 0f,
     var fadeAlpha: Float = 1f,
+    var tiltAngleDeg: Float = 0f,
+    var angularVelocityDeg: Float = 0f,
+    var auxProgress: Float = if (type == TrollTrapType.PINCER_WALLS) 0.08f else 0f,
+    var activationCount: Int = 0,
+    var gustSign: Float = 1f,
+    var prevX: Float = initialX,
+    var prevY: Float = initialY,
+    var preSteppedThisFrame: Boolean = false,
     var lockedTelegraphDurationFrames: Int = telegraphDurationFrames,
     var lockedMoveSpeed: Float = moveSpeed,
     var lockedCycleFrames: Int = cycleFrames
 ) {
+  companion object {
+    fun isInitiallySolid(type: TrollTrapType): Boolean = when (type) {
+      TrollTrapType.DISAPPEARING_FLOOR,
+      TrollTrapType.FAKE_SAFE_PLATFORM,
+      TrollTrapType.DELAYED_CRUMBLE,
+      TrollTrapType.MOVING_CRUSH_WALL,
+      TrollTrapType.FALLING_CEILING_BLOCK,
+      TrollTrapType.TIMED_BLINK_PLATFORM,
+      TrollTrapType.SPLIT_BRIDGE,
+      TrollTrapType.PHANTOM_LEDGE,
+      TrollTrapType.TILTING_PLANK,
+      TrollTrapType.EVASIVE_PLATFORM,
+      TrollTrapType.YO_YO_PLATFORM,
+      TrollTrapType.PINCER_WALLS,
+      TrollTrapType.STALKER_CRUSH_WALL -> true
+      else -> false
+    }
+  }
+
   fun applyLockedTuning(
       telegraphFrames: Int,
       moveSpeedScaled: Float,
@@ -771,21 +876,24 @@ data class TrollTrap(
   fun reset() {
     x = initialX
     y = initialY
+    prevX = initialX
+    prevY = initialY
     vx = 0f
     vy = 0f
     state = TrollTrapState.ARMED
     stateTimerFrames = phaseOffsetFrames
-    isSolid = (type == TrollTrapType.DISAPPEARING_FLOOR ||
-        type == TrollTrapType.FAKE_SAFE_PLATFORM ||
-        type == TrollTrapType.DELAYED_CRUMBLE ||
-        type == TrollTrapType.MOVING_CRUSH_WALL ||
-        type == TrollTrapType.FALLING_CEILING_BLOCK ||
-        type == TrollTrapType.TIMED_BLINK_PLATFORM)
+    isSolid = isInitiallySolid(type)
     isVisible = true
     morphSpikeHeight = 0f
     hasRelocated = false
     dropOffsetY = 0f
     fadeAlpha = 1f
+    tiltAngleDeg = 0f
+    angularVelocityDeg = 0f
+    auxProgress = if (type == TrollTrapType.PINCER_WALLS) 0.08f else 0f
+    activationCount = 0
+    gustSign = 1f
+    preSteppedThisFrame = false
   }
 }
 
@@ -802,7 +910,14 @@ data class TrapSnapshot(
     val morphSpikeHeight: Float,
     val hasRelocated: Boolean,
     val dropOffsetY: Float,
-    val fadeAlpha: Float
+    val fadeAlpha: Float,
+    val tiltAngleDeg: Float = 0f,
+    val angularVelocityDeg: Float = 0f,
+    val auxProgress: Float = 0f,
+    val activationCount: Int = 0,
+    val gustSign: Float = 1f,
+    val prevX: Float = x,
+    val prevY: Float = y
 )
 
 data class OrbitingPlatformSnapshot(
@@ -854,7 +969,8 @@ data class LevelCheckpointSnapshot(
     val trollTrapSnapshots: List<TrapSnapshot> = emptyList(),
     val orbitingPlatformSnapshots: List<OrbitingPlatformSnapshot> = emptyList(),
     val pendulumSnapshots: List<PendulumSnapshot> = emptyList(),
-    val lightningSnapshots: List<LightningSnapshot> = emptyList()
+    val lightningSnapshots: List<LightningSnapshot> = emptyList(),
+    val mirrorCurseFrames: Int = 0
 )
 
 enum class AdaptiveTier(

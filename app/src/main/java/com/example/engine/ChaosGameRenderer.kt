@@ -2,6 +2,7 @@ package com.example.engine
 
 import android.content.Context
 import android.graphics.*
+import com.example.data.PlayableCharacter
 import com.example.data.WatcherAppearance
 import kotlin.math.sin
 
@@ -13,8 +14,12 @@ import kotlin.math.sin
  */
 class ChaosGameRenderer(val context: Context) {
   val aaravRenderer = AaravCharacterRenderer()
+  val characterRenderer = PlayerCharacterRenderer(aaravRenderer)
   val expansionRenderer = ExpansionAtlasRenderer()
   val tileRenderer = TileAtlasRenderer(expansionRenderer)
+
+  @Volatile
+  var selectedCharacter: PlayableCharacter = PlayableCharacter.DEFAULT
 
   private val cameraLock = Any()
 
@@ -45,6 +50,13 @@ class ChaosGameRenderer(val context: Context) {
     typeface = Typeface.DEFAULT_BOLD
   }
   private val paintFirefly = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x99FEF9C3.toInt() }
+  private val paintMirrorAura = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = 0xAAC084FC.toInt()
+    style = Paint.Style.STROKE
+    strokeWidth = 3f
+    strokeCap = Paint.Cap.ROUND
+  }
+  private val paintMirrorCore = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x55A855F7 }
 
   private var animTick = 0
 
@@ -295,7 +307,20 @@ class ChaosGameRenderer(val context: Context) {
         tileRenderer.drawForestStalker(canvas, locked.forestStalker, renderCamX, renderCamY, animTick)
       }
       if (!locked.isGameOver) {
-        aaravRenderer.drawPlayer(canvas, locked.player, renderCamX, renderCamY)
+        characterRenderer.drawCharacter(canvas, selectedCharacter, locked.player, renderCamX, renderCamY)
+        if (locked.mirrorCurseFrames > 0) {
+          val cx = locked.player.x + locked.player.collisionWidth * 0.5f - renderCamX
+          val cy = locked.player.y - 14f - renderCamY
+          val pulse = 10f + sin(animTick * 0.35).toFloat() * 2.5f
+          canvas.drawCircle(cx, cy, pulse, paintMirrorCore)
+          canvas.drawCircle(cx, cy, pulse, paintMirrorAura)
+          // Left/right flip chevron arrows above Aarav
+          canvas.drawLine(cx - 7f, cy, cx + 7f, cy, paintMirrorAura)
+          canvas.drawLine(cx - 4f, cy - 3f, cx - 7f, cy, paintMirrorAura)
+          canvas.drawLine(cx - 4f, cy + 3f, cx - 7f, cy, paintMirrorAura)
+          canvas.drawLine(cx + 4f, cy - 3f, cx + 7f, cy, paintMirrorAura)
+          canvas.drawLine(cx + 4f, cy + 3f, cx + 7f, cy, paintMirrorAura)
+        }
       }
 
       // 9. Draw Ambient Fireflies (1-1), Particles, Atmospheric Overlays & Floating Score Popups

@@ -78,27 +78,35 @@ class Phase2ContinuousRunAndRecoveryTest {
   }
 
   private fun completeCurrentEngineChallenge(engine: ChaosGameEngine) {
+    val startEpoch = engine.challengeEpoch
     // Advance at least a few frames so timer/score move and defeat boss/clear trap hops cleanly
     repeat(10) { engine.update() }
     if (engine.level.guardianConfig != null) {
       engine.stoneGuardian.phase = com.example.data.GuardianPhase.DEFEATED
       engine.stoneGuardian.hitsRemaining = 0
     }
-    val gate = engine.tiles.first { it.type == TileType.SUN_GATE }
-    engine.player.x = gate.x + 12f
-    engine.player.y = gate.y + 8f
-    engine.update()
-    // On 1-1 / 1-3, RELOCATING_EXIT_DOOR may move gate on first approach; approach new location if still same challenge
-    if (!engine.isVictorious) {
-      val movedGate = engine.tiles.first { it.type == TileType.SUN_GATE }
-      engine.player.x = movedGate.x + 12f
-      engine.player.y = movedGate.y + 8f
+    var attempts = 0
+    while (!engine.isVictorious && engine.challengeEpoch == startEpoch && attempts < 12) {
+      val gate = engine.tiles.first { it.type == TileType.SUN_GATE }
+      engine.player.x = gate.x + 12f
+      engine.player.y = gate.y + 8f
+      engine.player.vx = 0f
+      engine.player.vy = 0f
       engine.update()
+      if (!engine.isVictorious && engine.challengeEpoch == startEpoch) {
+        // Allow relocating / fleeing sun gate / slam cage animations to settle cleanly
+        repeat(24) {
+          if (!engine.isVictorious && engine.challengeEpoch == startEpoch) {
+            engine.update()
+          }
+        }
+      }
+      attempts++
     }
   }
 
   @Test
-  fun test01_continuousProgressionAcrossAllFiveChallengesAndSingleSurfaceViewPreserved() {
+  fun test01_continuousProgressionAcrossAllTwelveChallengesAndSingleSurfaceViewPreserved() {
     lateinit var vm: GameStateViewModel
     lateinit var initialSurfaceView: GameSurfaceView
     composeTestRule.activityRule.scenario.onActivity { activity ->
@@ -124,8 +132,9 @@ class Phase2ContinuousRunAndRecoveryTest {
       initialSurfaceView = svs.single()
     }
 
-    val expectedOrder = listOf("ch_01", "ch_02", "ch_03", "ch_04", "ch_05")
-    for (idx in 0 until 4) {
+    val expectedOrder = ChallengeCatalog.entries.map { it.challengeId }
+    assertEquals(12, expectedOrder.size)
+    for (idx in 0 until expectedOrder.lastIndex) {
       val currentId = expectedOrder[idx]
       val nextId = expectedOrder[idx + 1]
       assertEquals(currentId, initialEngine.activeChallengeId)
@@ -147,8 +156,8 @@ class Phase2ContinuousRunAndRecoveryTest {
       }
     }
 
-    // Complete ch_05 -> must transition to RUN_COMPLETION screen (no auto-restart into ch_01)
-    assertEquals("ch_05", initialEngine.activeChallengeId)
+    // Complete ch_12 -> must transition to RUN_COMPLETION screen (no auto-restart into ch_01)
+    assertEquals("ch_12", initialEngine.activeChallengeId)
     completeCurrentEngineChallenge(initialEngine)
     composeTestRule.waitForIdle()
 
@@ -156,8 +165,8 @@ class Phase2ContinuousRunAndRecoveryTest {
     composeTestRule.onNodeWithTag("screen_run_completion").assertIsDisplayed()
     composeTestRule.onNodeWithTag("text_run_completion_count").assertIsDisplayed()
     val summary = vm.runCompletionSummary.value!!
-    assertEquals(5, summary.completedCount)
-    assertEquals(5, summary.totalChallenges)
+    assertEquals(12, summary.completedCount)
+    assertEquals(12, summary.totalChallenges)
     assertTrue(summary.challengeRecords.all { it.completed })
   }
 
@@ -267,7 +276,7 @@ class Phase2ContinuousRunAndRecoveryTest {
     composeTestRule.waitForIdle()
     val engine = vm.gameEngine!!
 
-    repeat(5) {
+    repeat(ChallengeCatalog.entries.size) {
       completeCurrentEngineChallenge(engine)
       composeTestRule.waitForIdle()
     }
@@ -300,9 +309,9 @@ class Phase2ContinuousRunAndRecoveryTest {
     val coordinator = ContinuousRunCoordinator()
     coordinator.startNewRun()
 
-    // Complete ch_01..ch_05 with strong ch_02 score=1200, fast time=8000ms, 0 deaths
-    for (i in 1..5) {
-      val id = "ch_0$i"
+    // Complete ch_01..ch_12 with strong ch_02 score=1200, fast time=8000ms, 0 deaths
+    for (def in ChallengeCatalog.entries) {
+      val id = def.challengeId
       coordinator.onChallengeCompleted(
           challengeId = id,
           attemptToken = coordinator.currentAttemptToken,
@@ -316,8 +325,8 @@ class Phase2ContinuousRunAndRecoveryTest {
       )
     }
     assertTrue(coordinator.isRunCompleted)
-    assertEquals(48000L, coordinator.cumulativeRunTimerMs)
-    assertEquals(3200, coordinator.cumulativeScore)
+    assertEquals(118000L, coordinator.cumulativeRunTimerMs)
+    assertEquals(6700, coordinator.cumulativeScore)
     val preReplayCh2 = coordinator.challengeRecords["ch_02"]!!
 
     // Replay ch_02 with WORSE performance -> existing better records & cumulative stats must not degrade
@@ -335,8 +344,8 @@ class Phase2ContinuousRunAndRecoveryTest {
     assertEquals(preReplayCh2.bestScore, worseMerged.bestScore)
     assertEquals(preReplayCh2.stars, worseMerged.stars)
     assertEquals(preReplayCh2.leastDeaths, worseMerged.leastDeaths)
-    assertEquals(48000L, coordinator.cumulativeRunTimerMs)
-    assertEquals(3200, coordinator.cumulativeScore)
+    assertEquals(118000L, coordinator.cumulativeRunTimerMs)
+    assertEquals(6700, coordinator.cumulativeScore)
     assertTrue(coordinator.isRunCompleted)
 
     // Verify ViewModel UI replay mode flow is non-destructive and marked REPLAY in HUD
@@ -347,7 +356,7 @@ class Phase2ContinuousRunAndRecoveryTest {
     }
     composeTestRule.waitForIdle()
     val runEngine = vm.gameEngine!!
-    repeat(5) {
+    repeat(ChallengeCatalog.entries.size) {
       completeCurrentEngineChallenge(runEngine)
       composeTestRule.waitForIdle()
     }
@@ -644,7 +653,7 @@ class Phase2ContinuousRunAndRecoveryTest {
     // Stress-test concurrent update() + loadChallenge() + renderer.render() across threads
     val failure = AtomicReference<Throwable?>(null)
     val doneLatch = CountDownLatch(2)
-    val configs = (1..5).map { ChallengeCatalog.createLockedConfig("ch_0$it")!! }
+    val configs = ChallengeCatalog.entries.map { ChallengeCatalog.createLockedConfig(it.challengeId)!! }
 
     val simThread = Thread {
       try {

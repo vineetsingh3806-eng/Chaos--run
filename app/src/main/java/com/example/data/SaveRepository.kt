@@ -153,11 +153,43 @@ class SaveRepository(context: Context) {
     prefs.edit().putFloat("pref_sfx_volume", volume).apply()
   }
 
+  // --- Vibration & Onboarding Preferences (Phase 5) ---
+
+  fun isVibrationEnabled(): Boolean {
+    return safeGetBoolean("pref_vibration_enabled", true)
+  }
+
+  fun setVibrationEnabled(enabled: Boolean, syncCommit: Boolean = false) {
+    val editor = prefs.edit().putBoolean("pref_vibration_enabled", enabled)
+    if (syncCommit) editor.commit() else editor.apply()
+  }
+
+  fun isOnboardingCompleted(): Boolean {
+    return safeGetBoolean("pref_onboarding_completed", false)
+  }
+
+  fun setOnboardingCompleted(completed: Boolean, syncCommit: Boolean = false) {
+    val editor = prefs.edit().putBoolean("pref_onboarding_completed", completed)
+    if (syncCommit) editor.commit() else editor.apply()
+  }
+
+  // --- Character Selection Preferences (Phase 6) ---
+
+  fun getSelectedCharacter(): PlayableCharacter {
+    return PlayableCharacter.fromId(safeGetString(KEY_SELECTED_CHARACTER, PlayableCharacter.DEFAULT.id))
+  }
+
+  fun setSelectedCharacter(character: PlayableCharacter, syncCommit: Boolean = true) {
+    val editor = prefs.edit().putString(KEY_SELECTED_CHARACTER, character.id)
+    if (syncCommit) editor.commit() else editor.apply()
+  }
+
   // --- Phase 2: Continuous Run Persistence, Migration (v1 -> v2) & Recovery ---
 
   companion object {
     const val SAVE_SCHEMA_VERSION = 2
 
+    private const val KEY_SELECTED_CHARACTER = "pref_selected_character_id"
     private const val KEY_CR_SCHEMA_VERSION = "cr_schema_version"
     private const val KEY_CR_RUN_ACTIVE = "cr_run_active"
     private const val KEY_CR_RUN_IN_FOREGROUND = "cr_run_in_foreground"
