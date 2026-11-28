@@ -1,0 +1,6 @@
+{
+  "name": "Chaos Run",
+  "description": "An original 2D retro adventure platformer where the environment itself is the primary obstacle. Featuring 50 levels across 5 unique worlds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
